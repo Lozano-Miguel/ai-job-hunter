@@ -6,6 +6,7 @@ import random
 import re
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote_plus
 
@@ -193,6 +194,35 @@ def scrape_indeed(keyword: str, session: cffi_requests.Session) -> list[dict[str
     return jobs
 
 
+def deduplicate(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    unique: list[dict[str, Any]] = []
+    for job in jobs:
+        key = str(job.get("job_key") or "")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(job)
+    return unique
+
+
+def save_json(jobs: list[dict[str, Any]]) -> str:
+    out_path = Path(OUTPUT_FILE)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(
+        json.dumps(jobs, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    return str(out_path)
+
+
+def _date_filter_label() -> str:
+    if int(DATE_FILTER) == 1:
+        return "Last 24 hours"
+    if int(DATE_FILTER) == 7:
+        return "Last 7 days"
+    return f"Last {DATE_FILTER} days"
+
+
 def main() -> int:
     if not os.path.exists(CV_PATH):
         print("[ERROR] cv.pdf not found. Please place your CV in the project directory.")
@@ -220,14 +250,23 @@ def main() -> int:
     prime_session(session)
 
     for title in titles:
-        print(f"[INFO] Scraping Indeed for '{title}'...")
+        print(f"[Indeed] Scraping: {title!r}")
         keyword_jobs = scrape_indeed(title, session)
-        print(f"[INFO] Found {len(keyword_jobs)} jobs for '{title}'.")
-        for job in keyword_jobs[:3]:
-            print(json.dumps(job, ensure_ascii=False, indent=2))
         all_jobs.extend(keyword_jobs)
 
-    print(f"[RESULT] Scraped {len(all_jobs)} total jobs.")
+    unique_jobs = deduplicate(all_jobs)
+    output_path = save_json(unique_jobs)
+
+    print("══════════════════════════════════════")
+    print(" Job Hunter Complete")
+    print("══════════════════════════════════════")
+    print(f" Keywords searched : {len(titles)}")
+    print(f" Raw results       : {len(all_jobs)}")
+    print(f" After dedup       : {len(unique_jobs)} unique jobs")
+    print(f" Date filter       : {_date_filter_label()}")
+    print(f" Location          : {LOCATION}")
+    print(f" Output            : {output_path}")
+    print("══════════════════════════════════════")
     return 0
 
 
