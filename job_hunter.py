@@ -20,6 +20,7 @@ CV_PATH = "cv.pdf"
 LOCATION = "Lisbon, Portugal"  # Change freely
 DOMAIN = "https://pt.indeed.com"
 DATE_FILTER = 1  # 1 = last 24h | 7 = last week
+RADIUS = 25
 MAX_PAGES = 3  # Pages per keyword (10 jobs/page)
 OUTPUT_FILE = "output/job_leads.json"
 
@@ -114,7 +115,7 @@ def build_search_url(keyword: str, start: int) -> str:
     encoded_location = quote_plus(LOCATION)
     return (
         f"{DOMAIN}/jobs?q={encoded_keyword}&l={encoded_location}"
-        f"&fromage={DATE_FILTER}&start={start}"
+        f"&fromage={DATE_FILTER}&radius={RADIUS}&start={start}"
     )
 
 
@@ -218,9 +219,53 @@ def save_json(jobs: list[dict[str, Any]]) -> str:
 def _date_filter_label() -> str:
     if int(DATE_FILTER) == 1:
         return "Last 24 hours"
+    if int(DATE_FILTER) == 3:
+        return "Last 3 days"
     if int(DATE_FILTER) == 7:
         return "Last 7 days"
+    if int(DATE_FILTER) == 14:
+        return "Last 14 days"
     return f"Last {DATE_FILTER} days"
+
+
+def _interactive_setup() -> None:
+    global LOCATION, DATE_FILTER, RADIUS, MAX_PAGES
+
+    # 1) City / Location
+    loc = input(f"Enter target city/location [{LOCATION}]: ").strip()
+    if loc:
+        LOCATION = loc
+
+    # 2) Date filter
+    print("Date filter:")
+    print("  [1] Last 24 hours")
+    print("  [2] Last 3 days")
+    print("  [3] Last 7 days")
+    print("  [4] Last 14 days")
+    date_choice = input("Choice [1]: ").strip()
+    date_map: dict[str, int] = {"1": 1, "2": 3, "3": 7, "4": 14}
+    DATE_FILTER = date_map.get(date_choice, 1)
+
+    # 3) Search radius
+    print("Search radius:")
+    print("  [1]  5 miles")
+    print("  [2] 10 miles")
+    print("  [3] 15 miles")
+    print("  [4] 25 miles")
+    print("  [5] 35 miles")
+    radius_choice = input("Choice [4]: ").strip()
+    radius_map: dict[str, int] = {"1": 5, "2": 10, "3": 15, "4": 25, "5": 35}
+    RADIUS = radius_map.get(radius_choice, 25)
+
+    # 4) Max pages per keyword
+    raw_pages = input(f"Max pages per keyword (10 jobs/page) [{MAX_PAGES}]: ").strip()
+    if raw_pages:
+        try:
+            pages = int(raw_pages)
+        except ValueError:
+            pages = MAX_PAGES
+        if 1 <= pages <= 10:
+            MAX_PAGES = pages
 
 
 def main() -> int:
@@ -232,18 +277,37 @@ def main() -> int:
         print("[ERROR] cv.pdf is empty. Please replace it with your CV.")
         return 1
 
+    _interactive_setup()
+
     cv_text = extract_cv_text(CV_PATH)
     if not cv_text.strip():
         print("[ERROR] Could not extract any text from cv.pdf. Is it scanned? Try an OCR'd PDF.")
         return 1
 
-    titles = generate_job_titles(cv_text)
-    print(f"[Groq] Generated {len(titles)} job titles:")
-    for i, t in enumerate(titles, start=1):
-        print(f"  [{i}] {t}")
+    # 5) Additional context for Groq (after CV is extracted, before Groq call)
+    print("Your CV has been read. Anything to add before the AI generates job titles?")
+    additional = input(
+        '(e.g. "I prefer remote roles", "I\'m a recent grad", or press Enter to skip): '
+    ).strip()
+    if additional:
+        cv_text = cv_text + "\n\n--- ADDITIONAL CONTEXT ---\n" + additional
+
+    print("─────────────────────────────────")
+    print(" Search Configuration")
+    print("─────────────────────────────────")
+    print(f" Location   : {LOCATION}")
+    print(f" Date filter: {_date_filter_label()}")
+    print(f" Radius     : {RADIUS} miles")
+    print(f" Max pages  : {MAX_PAGES}")
+    print("─────────────────────────────────")
 
     if DEBUG_KEYWORD_OVERRIDE:
         titles = [DEBUG_KEYWORD_OVERRIDE]
+    else:
+        titles = generate_job_titles(cv_text)
+        print(f"[Groq] Generated {len(titles)} job titles:")
+        for i, t in enumerate(titles, start=1):
+            print(f"  [{i}] {t}")
 
     all_jobs: list[dict[str, Any]] = []
     session = create_session()
