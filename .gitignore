@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Environment files / secrets
+.env
+
+# Outputs
+output/
+
+# OS / editor noise
+.DS_Store
+.idea/
+.vscode/
