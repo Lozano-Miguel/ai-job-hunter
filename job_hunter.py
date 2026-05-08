@@ -4,7 +4,10 @@ import json
 import os
 import random
 import re
+import sys
+import threading
 import time
+import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -298,13 +301,45 @@ def deduplicate(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return unique
 
 
-def save_json(jobs: list[dict[str, Any]]) -> str:
+def save_json(jobs: list[dict[str, Any]]) -> tuple[str, int, int, int]:
     out_path = Path(OUTPUT_FILE)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    existing_jobs: list[dict[str, Any]] = []
+    existing_by_key: dict[str, dict[str, Any]] = {}
+    if out_path.exists():
+        try:
+            loaded = json.loads(out_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, list):
+                existing_jobs = [j for j in loaded if isinstance(j, dict)]
+        except (json.JSONDecodeError, OSError):
+            existing_jobs = []
+        for job in existing_jobs:
+            job_key = str(job.get("job_key") or "")
+            if job_key:
+                existing_by_key[job_key] = job
+
+    merged_jobs = list(existing_jobs)
+    new_count = 0
+    skipped_count = 0
+    # Status values: "not_applied" | "applied" | "interviewing" | "rejected"
+    for job in jobs:
+        job_key = str(job.get("job_key") or "")
+        if not job_key:
+            continue
+        if job_key in existing_by_key:
+            skipped_count += 1
+            continue
+        new_job = dict(job)
+        new_job["applied"] = False
+        new_job["status"] = "not_applied"
+        merged_jobs.append(new_job)
+        existing_by_key[job_key] = new_job
+        new_count += 1
+
     out_path.write_text(
-        json.dumps(jobs, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        json.dumps(merged_jobs, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
-    return str(out_path)
+    return str(out_path), new_count, skipped_count, len(merged_jobs)
 
 
 def _date_filter_label() -> str:
@@ -375,6 +410,20 @@ def _interactive_setup() -> list[str]:
 
 
 def main() -> int:
+    if "--dashboard" in sys.argv:
+        from dashboard_server import main as run_server
+
+        thread = threading.Thread(target=run_server, daemon=True)
+        thread.start()
+        time.sleep(1)
+        webbrowser.open("http://localhost:8000/dashboard.html")
+        print("[Dashboard] Open at http://localhost:8000/dashboard.html — press Ctrl+C to stop")
+        try:
+            threading.Event().wait()
+        except KeyboardInterrupt:
+            print("\n[Dashboard] Closed.")
+            sys.exit(0)
+
     if not os.path.exists(CV_PATH):
         print("[ERROR] cv.pdf not found. Please place your CV in the project directory.")
         return 1
@@ -433,14 +482,15 @@ def main() -> int:
             all_jobs.extend(scrape_linkedin(title, linkedin_session))
 
     unique_jobs = deduplicate(all_jobs)
-    output_path = save_json(unique_jobs)
+    output_path, new_count, skipped_count, total_count = save_json(unique_jobs)
 
     print("══════════════════════════════════════")
     print(" Job Hunter Complete")
     print("══════════════════════════════════════")
     print(f" Keywords searched : {len(titles)}")
-    print(f" Raw results       : {len(all_jobs)}")
-    print(f" After dedup       : {len(unique_jobs)} unique jobs")
+    print(f" New jobs added  : {new_count}")
+    print(f" Already tracked : {skipped_count}")
+    print(f" Total in file   : {total_count}")
     print(f" Date filter       : {_date_filter_label()}")
     print(f" Location          : {LOCATION}")
     print(f" Output            : {output_path}")

@@ -1,0 +1,103 @@
+import json
+import os
+import re
+import socket
+from http.server import HTTPServer, SimpleHTTPRequestHandler
+
+
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+OUTPUT_DIR = os.path.join(ROOT_DIR, "output")
+JOB_LEADS_PATH = os.path.join(OUTPUT_DIR, "job_leads.json")
+
+
+class DashboardHandler(SimpleHTTPRequestHandler):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, directory=OUTPUT_DIR, **kwargs)
+
+    def end_headers(self) -> None:
+        if self.path.startswith("/job_leads.json"):
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
+        super().end_headers()
+
+    def _send_json(self, status_code: int, payload: dict) -> None:
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status_code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self) -> None:
+        if self.path != "/update-status":
+            self._send_json(404, {"ok": False, "error": "Not found"})
+            return
+
+        content_length = int(self.headers.get("Content-Length", "0") or "0")
+        raw_body = self.rfile.read(content_length) if content_length > 0 else b""
+        try:
+            payload = json.loads(raw_body.decode("utf-8") if raw_body else "{}")
+        except json.JSONDecodeError:
+            self._send_json(400, {"ok": False, "error": "Invalid JSON"})
+            return
+
+        job_key = str(payload.get("job_key") or "").strip()
+        if not job_key or not re.match(r"^[\w\-]+$", job_key):
+            self._send_json(400, {"ok": False, "error": "Invalid job_key"})
+            return
+
+        applied = bool(payload.get("applied"))
+        status = str(payload.get("status") or "").strip()
+        if not status:
+            self._send_json(400, {"ok": False, "error": "Missing status"})
+            return
+
+        try:
+            with open(JOB_LEADS_PATH, "r", encoding="utf-8") as f:
+                jobs = json.load(f)
+        except FileNotFoundError:
+            self._send_json(404, {"ok": False, "error": "job_leads.json not found"})
+            return
+        except json.JSONDecodeError:
+            self._send_json(500, {"ok": False, "error": "job_leads.json is invalid"})
+            return
+
+        if not isinstance(jobs, list):
+            self._send_json(500, {"ok": False, "error": "job_leads.json must be a list"})
+            return
+
+        found = False
+        for job in jobs:
+            if not isinstance(job, dict):
+                continue
+            if str(job.get("job_key") or "") == job_key:
+                job["applied"] = applied
+                job["status"] = status
+                found = True
+                break
+
+        if not found:
+            self._send_json(404, {"ok": False, "error": "job_key not found"})
+            return
+
+        with open(JOB_LEADS_PATH, "w", encoding="utf-8") as f:
+            json.dump(jobs, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+
+        self._send_json(200, {"ok": True})
+
+
+def main() -> None:
+    HTTPServer.allow_reuse_address = True
+    try:
+        server = HTTPServer(("localhost", 8000), DashboardHandler)
+    except OSError:
+        print("[ERROR] Port 8000 is already in use. Run: fuser -k 8000/tcp and try again.")
+        return
+    print("[Dashboard] Running at http://localhost:8000/dashboard.html")
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()
