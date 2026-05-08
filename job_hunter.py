@@ -11,6 +11,7 @@ from typing import Any
 from urllib.parse import quote_plus
 
 import pdfplumber
+from pyquery import PyQuery as pq
 from curl_cffi import requests as cffi_requests
 from dotenv import load_dotenv
 from groq import Groq
@@ -23,6 +24,7 @@ DATE_FILTER = 1  # 1 = last 24h | 7 = last week
 RADIUS = 25
 MAX_PAGES = 3  # Pages per keyword (10 jobs/page)
 OUTPUT_FILE = "output/job_leads.json"
+SOURCES = ["indeed", "linkedin"]  # Toggle sources here
 
 # Use this to test one keyword in Step 3 without changing the rest of the flow.
 DEBUG_KEYWORD_OVERRIDE: str | None = None
@@ -119,6 +121,70 @@ def build_search_url(keyword: str, start: int) -> str:
     )
 
 
+def create_linkedin_session() -> cffi_requests.Session:
+    session = cffi_requests.Session(impersonate="chrome124")
+    session.headers.update(
+        {
+            "accept": "*/*",
+            "accept-language": "en-US,en;q=0.9",
+            "referer": "https://www.linkedin.com/jobs/search",
+            "user-agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            ),
+        }
+    )
+    return session
+
+
+DATE_FILTER_TO_LINKEDIN = {1: "r86400", 3: "r259200", 7: "r604800", 14: "r1209600"}
+
+
+def build_linkedin_url(keyword: str, start: int) -> str:
+    encoded_keyword = quote_plus(keyword)
+    encoded_location = quote_plus(LOCATION)
+    f_tpr = DATE_FILTER_TO_LINKEDIN.get(DATE_FILTER, "r604800")
+    return (
+        "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
+        f"?keywords={encoded_keyword}&location={encoded_location}&start={start}&f_TPR={f_tpr}"
+    )
+
+
+def parse_jobs_from_linkedin_html(html: str, keyword: str) -> list[dict[str, Any]]:
+    if not html or not html.strip():
+        return []
+    try:
+        doc = pq(html)
+    except Exception:
+        return []
+    jobs: list[dict[str, Any]] = []
+    for item in doc("li").items():
+        title = item.find(".base-search-card__title").text().strip()
+        company = item.find(".base-search-card__subtitle").text().strip()
+        location = item.find(".job-search-card__location").text().strip()
+        link = item.find(".base-card__full-link").attr("href")
+        if not title:
+            continue
+        clean_link = link.split("?")[0] if link else "N/A"
+        job_key = clean_link.rstrip("/").split("-")[-1] if clean_link != "N/A" else None
+        if not job_key:
+            continue
+        jobs.append(
+            {
+                "title": title,
+                "company": company or "N/A",
+                "location": location or "N/A",
+                "salary": "N/A",
+                "url": clean_link,
+                "job_key": f"li_{job_key}",
+                "keyword": keyword,
+                "source": "linkedin",
+                "scraped_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+    return jobs
+
+
 def parse_jobs_from_html(html: str, keyword: str) -> list[dict[str, Any]]:
     pattern = r'window\.mosaic\.providerData\["mosaic-provider-jobcards"\]\s*=\s*(\{.+?\})\s*;'
     match = re.search(pattern, html, re.DOTALL)
@@ -156,6 +222,7 @@ def parse_jobs_from_html(html: str, keyword: str) -> list[dict[str, Any]]:
                 "url": f"{DOMAIN}/viewjob?jk={job_key}",
                 "job_key": job_key,
                 "keyword": keyword,
+                "source": "indeed",
                 "scraped_at": datetime.now(timezone.utc).isoformat(),
             }
         )
@@ -195,6 +262,30 @@ def scrape_indeed(keyword: str, session: cffi_requests.Session) -> list[dict[str
     return jobs
 
 
+def scrape_linkedin(keyword: str, session: cffi_requests.Session) -> list[dict[str, Any]]:
+    jobs: list[dict[str, Any]] = []
+    for page_index in range(MAX_PAGES):
+        start = page_index * 25
+        url = build_linkedin_url(keyword, start)
+        r = session.get(url, timeout=30)
+        if not r.text.strip():
+            print(f"[WARN] LinkedIn returned empty body for '{keyword}' page {page_index + 1}")
+            print(f"       Status: {r.status_code} | URL: {url}")
+            break
+        if r.status_code == 429:
+            print(f"[WARN] LinkedIn rate limited on '{keyword}', stopping.")
+            break
+        if r.status_code != 200:
+            print(f"[WARN] LinkedIn page {page_index + 1} for '{keyword}' returned {r.status_code}")
+            break
+        page_jobs = parse_jobs_from_linkedin_html(r.text, keyword)
+        if not page_jobs:
+            break
+        jobs.extend(page_jobs)
+        time.sleep(random.uniform(3, 7))
+    return jobs
+
+
 def deduplicate(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     seen: set[str] = set()
     unique: list[dict[str, Any]] = []
@@ -228,8 +319,21 @@ def _date_filter_label() -> str:
     return f"Last {DATE_FILTER} days"
 
 
-def _interactive_setup() -> None:
+def _interactive_setup() -> list[str]:
     global LOCATION, DATE_FILTER, RADIUS, MAX_PAGES
+
+    # 0) Sources
+    print("Sources to scrape:")
+    print("  [1] Both Indeed + LinkedIn (default)")
+    print("  [2] Indeed only")
+    print("  [3] LinkedIn only")
+    source_choice = input("Choice [1]: ").strip()
+    sources_map: dict[str, list[str]] = {
+        "1": ["indeed", "linkedin"],
+        "2": ["indeed"],
+        "3": ["linkedin"],
+    }
+    sources = sources_map.get(source_choice, ["indeed", "linkedin"])
 
     # 1) City / Location
     loc = input(f"Enter target city/location [{LOCATION}]: ").strip()
@@ -267,6 +371,8 @@ def _interactive_setup() -> None:
         if 1 <= pages <= 10:
             MAX_PAGES = pages
 
+    return sources
+
 
 def main() -> int:
     if not os.path.exists(CV_PATH):
@@ -277,7 +383,7 @@ def main() -> int:
         print("[ERROR] cv.pdf is empty. Please replace it with your CV.")
         return 1
 
-    _interactive_setup()
+    sources = _interactive_setup()
 
     cv_text = extract_cv_text(CV_PATH)
     if not cv_text.strip():
@@ -299,6 +405,8 @@ def main() -> int:
     print(f" Date filter: {_date_filter_label()}")
     print(f" Radius     : {RADIUS} miles")
     print(f" Max pages  : {MAX_PAGES}")
+    sources_label = ", ".join("Indeed" if s == "indeed" else "LinkedIn" for s in sources)
+    print(f" Sources     : {sources_label}")
     print("─────────────────────────────────")
 
     if DEBUG_KEYWORD_OVERRIDE:
@@ -310,13 +418,19 @@ def main() -> int:
             print(f"  [{i}] {t}")
 
     all_jobs: list[dict[str, Any]] = []
-    session = create_session()
-    prime_session(session)
+    indeed_session = create_session() if "indeed" in sources else None
+    linkedin_session = create_linkedin_session() if "linkedin" in sources else None
+
+    if indeed_session:
+        prime_session(indeed_session)
 
     for title in titles:
-        print(f"[Indeed] Scraping: {title!r}")
-        keyword_jobs = scrape_indeed(title, session)
-        all_jobs.extend(keyword_jobs)
+        if "indeed" in sources:
+            print(f"[Indeed] Scraping: '{title}'")
+            all_jobs.extend(scrape_indeed(title, indeed_session))
+        if "linkedin" in sources:
+            print(f"[LinkedIn] Scraping: '{title}'")
+            all_jobs.extend(scrape_linkedin(title, linkedin_session))
 
     unique_jobs = deduplicate(all_jobs)
     output_path = save_json(unique_jobs)
