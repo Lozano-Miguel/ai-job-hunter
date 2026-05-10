@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import random
@@ -8,9 +9,10 @@ import sys
 import threading
 import time
 import webbrowser
+from functools import wraps
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, ParamSpec, TypeVar
 from urllib.parse import quote_plus
 
 import pdfplumber
@@ -31,7 +33,8 @@ MAX_PAGES = 3  # Pages per keyword (10 jobs/page)
 ITJOBS_LOCATION_ID = 14  # 14 = Lisboa. See itjobs.pt/api for other IDs
 ITJOBS_LIMIT = 10  # Results per page
 OUTPUT_FILE = "output/job_leads.json"
-SOURCES = ["indeed", "linkedin"]  # Toggle sources here
+# Used when the source menu choice is blank or not in 1–9 (see _interactive_setup).
+SOURCES = ["indeed", "linkedin", "itjobs", "netempregos", "sapo"]
 
 # Use this to test one keyword in Step 3 without changing the rest of the flow.
 DEBUG_KEYWORD_OVERRIDE: str | None = None
@@ -44,6 +47,52 @@ SYSTEM_PROMPT = (
     "must be a realistic, searchable job title a recruiter would post\n"
     "on Indeed. Return only valid JSON — no explanation, no markdown."
 )
+
+MAX_GET_ATTEMPTS = 3
+GET_RETRY_DELAYS_SECONDS = (2, 4, 8)
+P = ParamSpec("P")
+R = TypeVar("R")
+
+
+def retry_http_get(func: Callable[P, R]) -> Callable[P, R]:
+    @wraps(func)
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        last_error: Exception | None = None
+        for attempt in range(1, MAX_GET_ATTEMPTS + 1):
+            try:
+                response = func(*args, **kwargs)
+                status_code = getattr(response, "status_code", None)
+                if status_code is not None and 500 <= status_code < 600:
+                    if attempt >= MAX_GET_ATTEMPTS:
+                        return response
+                    delay = GET_RETRY_DELAYS_SECONDS[min(attempt - 1, len(GET_RETRY_DELAYS_SECONDS) - 1)]
+                    print(
+                        f"[WARN] HTTP {status_code} on GET (attempt {attempt}/{MAX_GET_ATTEMPTS}). "
+                        f"Retrying in {delay}s..."
+                    )
+                    time.sleep(delay)
+                    continue
+                return response
+            except (std_requests.Timeout, std_requests.ConnectionError) as err:
+                last_error = err
+                if attempt >= MAX_GET_ATTEMPTS:
+                    raise
+                delay = GET_RETRY_DELAYS_SECONDS[min(attempt - 1, len(GET_RETRY_DELAYS_SECONDS) - 1)]
+                print(
+                    f"[WARN] GET failed with {type(err).__name__} "
+                    f"(attempt {attempt}/{MAX_GET_ATTEMPTS}). Retrying in {delay}s..."
+                )
+                time.sleep(delay)
+        if last_error:
+            raise last_error
+        return func(*args, **kwargs)
+
+    return wrapper
+
+
+@retry_http_get
+def session_get_with_retry(session: cffi_requests.Session, url: str, **kwargs: Any) -> Any:
+    return session.get(url, **kwargs)
 
 
 def extract_cv_text(pdf_path: str) -> str:
@@ -74,8 +123,6 @@ def _validate_job_titles(value: Any) -> list[str]:
 
 
 def generate_job_titles(cv_text: str) -> list[str]:
-    load_dotenv()
-    os.getenv("ITJOBS_API_KEY")  # loaded from .env for scrape_itjobs
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
         print("[ERROR] GROQ_API_KEY missing. Add it to your .env file as GROQ_API_KEY=...")
@@ -145,10 +192,24 @@ def create_linkedin_session() -> cffi_requests.Session:
     return session
 
 
+def _chrome_124_user_agent() -> str:
+    return (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    )
+
+
+def _stable_key_from_url(url: str, prefix: str) -> str:
+    """Stable dedup key: Python's hash() is salted per process (not suitable for job_key)."""
+    digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+    return f"{prefix}_{digest}"
+
+
 def create_netempregos_session() -> cffi_requests.Session:
     session = cffi_requests.Session(impersonate="chrome124")
     session.headers.update(
         {
+            "User-Agent": _chrome_124_user_agent(),
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
             "Accept-Language": "pt-PT,pt;q=0.9,en-US;q=0.8,en;q=0.7",
             "Referer": "https://www.net-empregos.com/",
@@ -162,6 +223,7 @@ def create_sapo_session() -> cffi_requests.Session:
     session = cffi_requests.Session(impersonate="chrome124")
     session.headers.update(
         {
+            "User-Agent": _chrome_124_user_agent(),
             "Referer": "https://emprego.sapo.pt/",
             "Accept-Language": "pt-PT,pt;q=0.9,en-US;q=0.8",
         }
@@ -274,7 +336,7 @@ def create_session() -> cffi_requests.Session:
 
 
 def prime_session(session: cffi_requests.Session) -> None:
-    session.get(DOMAIN, timeout=30)
+    session_get_with_retry(session, DOMAIN, timeout=30)
     time.sleep(random.uniform(2, 4))
 
 
@@ -294,17 +356,54 @@ def parse_jobs_from_netempregos_html(html: str, keyword: str) -> list[dict[str, 
 
         # Job key from URL path — pattern is /123456/slug/
         parts = [p for p in href.split("/") if p]
-        job_key = f"ne_{parts[0]}" if parts and parts[0].isdigit() else f"ne_{abs(hash(url))}"
+        job_key = (
+            f"ne_{parts[0]}"
+            if parts and parts[0].isdigit()
+            else _stable_key_from_url(url, "ne")
+        )
 
-        # Company, location, salary — scraped from metadata text blocks
-        meta_items = [
-            t.strip()
-            for t in card.get_text(separator="|").split("|")
-            if t.strip() and len(t.strip()) > 2
-        ]
-        company = meta_items[1] if len(meta_items) > 1 else "N/A"
-        location = meta_items[2] if len(meta_items) > 2 else "N/A"
-        salary = next((m for m in meta_items if "€" in m or "eur" in m.lower()), "N/A")
+        # Prefer explicit fields; avoid pipe-splitting the whole card (order is unreliable).
+        company = "N/A"
+        location = "N/A"
+        salary = "N/A"
+        for sel in (
+            ".empresa",
+            ".nome_empresa",
+            ".company",
+            "span.empresa",
+            "[class*='empresa']",
+        ):
+            el = card.select_one(sel)
+            if el:
+                t = el.get_text(strip=True)
+                if len(t) > 1:
+                    company = t
+                    break
+        for sel in (".localidade", ".local", ".zona", "[class*='local']"):
+            el = card.select_one(sel)
+            if el:
+                t = el.get_text(strip=True)
+                if len(t) > 1:
+                    location = t
+                    break
+        meta_items: list[str] = []
+        if company == "N/A" or location == "N/A":
+            for s in card.stripped_strings:
+                piece = s.strip()
+                if len(piece) <= 2 or piece == title:
+                    continue
+                if piece not in meta_items:
+                    meta_items.append(piece)
+            if company == "N/A" and len(meta_items) > 1:
+                company = meta_items[1]
+            if location == "N/A" and len(meta_items) > 2:
+                location = meta_items[2]
+        salary_gen = (
+            m
+            for m in card.stripped_strings
+            if "€" in m or "eur" in m.lower()
+        )
+        salary = next(salary_gen, "N/A")
 
         jobs.append(
             {
@@ -329,7 +428,7 @@ def scrape_indeed(keyword: str, session: cffi_requests.Session) -> list[dict[str
         start = page_index * 10
         url = build_search_url(keyword, start)
 
-        resp = session.get(url, timeout=30)
+        resp = session_get_with_retry(session, url, timeout=30)
         if resp.status_code != 200:
             print(
                 f"[ERROR] Indeed returned HTTP {resp.status_code} for keyword={keyword!r}, page={page_index + 1}"
@@ -351,7 +450,7 @@ def scrape_linkedin(keyword: str, session: cffi_requests.Session) -> list[dict[s
     for page_index in range(MAX_PAGES):
         start = page_index * 25
         url = build_linkedin_url(keyword, start)
-        r = session.get(url, timeout=30)
+        r = session_get_with_retry(session, url, timeout=30)
         if not r.text.strip():
             print(f"[WARN] LinkedIn returned empty body for '{keyword}' page {page_index + 1}")
             print(f"       Status: {r.status_code} | URL: {url}")
@@ -371,7 +470,6 @@ def scrape_linkedin(keyword: str, session: cffi_requests.Session) -> list[dict[s
 
 
 def scrape_itjobs(keyword: str) -> list[dict[str, Any]]:
-    load_dotenv()
     api_key = os.getenv("ITJOBS_API_KEY")
     if not api_key:
         print("[ERROR] ITJOBS_API_KEY missing from .env")
@@ -457,15 +555,33 @@ def scrape_netempregos(keyword: str, session: cffi_requests.Session) -> list[dic
             f"https://www.net-empregos.com/pesquisa-empregos.asp"
             f"?chaves={quote_plus(keyword)}&cidade={quote_plus(city)}&page={page}"
         )
-        r = session.get(url, timeout=30)
+        r = session_get_with_retry(session, url, timeout=30)
 
-        # Redirect to login means bot was detected
-        if "loginc.asp" in r.url or r.status_code != 200:
+        # curl_cffi sets r.url to EFFECTIVE_URL (final URL after redirects). Also check body
+        # when the site returns 200 with an HTML login wall.
+        combined_urls = " ".join(
+            u
+            for u in (
+                getattr(r, "url", None),
+                getattr(r, "redirect_url", None),
+                getattr(getattr(r, "request", None), "url", None),
+            )
+            if u
+        ).lower()
+        snippet = (r.text or "")[:6000].lower()
+        login_wall = (
+            "login de candidato" in snippet
+            or "/loginc.asp" in combined_urls
+            or "loginc.asp" in combined_urls
+        )
+        if r.status_code != 200:
             print(f"[WARN] Net-Empregos blocked page {page} for '{keyword}' (status {r.status_code})")
             break
 
         page_jobs = parse_jobs_from_netempregos_html(r.text, keyword)
         if not page_jobs:
+            if login_wall:
+                print(f"[WARN] Net-Empregos blocked page {page} for '{keyword}' (status {r.status_code})")
             break
 
         jobs.extend(page_jobs)
@@ -501,7 +617,9 @@ def parse_jobs_from_sapo_html(html: str, keyword: str) -> tuple[list[dict[str, A
     jobs: list[dict[str, Any]] = []
     for job in jobs_raw:
         link = job.get("link") or job.get("url") or "N/A"
-        job_key = f"sapo_{abs(hash(link))}"
+        job_key = (
+            _stable_key_from_url(link, "sapo") if link != "N/A" else "sapo_unknown"
+        )
 
         salary = "N/A"
         sal_min = job.get("salary_min")
@@ -540,7 +658,7 @@ def scrape_sapo(keyword: str, session: cffi_requests.Session) -> list[dict[str, 
             f"&data-de-publicacao={date_param}"
             f"&pagina={page}&ordem=relevancia"
         )
-        r = session.get(url, timeout=30)
+        r = session_get_with_retry(session, url, timeout=30)
         if r.status_code != 200:
             print(f"[WARN] Sapo page {page} for '{keyword}' returned {r.status_code}")
             break
@@ -652,7 +770,7 @@ def _interactive_setup() -> list[str]:
         "8": ["linkedin", "itjobs"],
         "9": ["itjobs", "netempregos", "sapo"],
     }
-    sources = sources_map.get(source_choice, ["indeed", "linkedin", "itjobs", "netempregos", "sapo"])
+    sources = sources_map.get(source_choice, list(SOURCES))
 
     # 1) City / Location
     loc = input(f"Enter target city/location [{LOCATION}]: ").strip()
@@ -716,6 +834,8 @@ def main() -> int:
         print("[ERROR] cv.pdf is empty. Please replace it with your CV.")
         return 1
 
+    load_dotenv()
+
     sources = _interactive_setup()
 
     cv_text = extract_cv_text(CV_PATH)
@@ -723,13 +843,14 @@ def main() -> int:
         print("[ERROR] Could not extract any text from cv.pdf. Is it scanned? Try an OCR'd PDF.")
         return 1
 
-    # 5) Additional context for Groq (after CV is extracted, before Groq call)
-    print("Your CV has been read. Anything to add before the AI generates job titles?")
-    additional = input(
-        '(e.g. "I prefer remote roles", "I\'m a recent grad", or press Enter to skip): '
-    ).strip()
-    if additional:
-        cv_text = cv_text + "\n\n--- ADDITIONAL CONTEXT ---\n" + additional
+    # 5) Additional context for Groq (skip when Groq is not used — avoids misleading prompt)
+    if "--no-groq" not in sys.argv:
+        print("Your CV has been read. Anything to add before the AI generates job titles?")
+        additional = input(
+            '(e.g. "I prefer remote roles", "I\'m a recent grad", or press Enter to skip): '
+        ).strip()
+        if additional:
+            cv_text = cv_text + "\n\n--- ADDITIONAL CONTEXT ---\n" + additional
 
     print("─────────────────────────────────")
     print(" Search Configuration")
