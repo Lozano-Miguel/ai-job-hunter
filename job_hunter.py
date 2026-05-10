@@ -679,15 +679,47 @@ def scrape_sapo(keyword: str, session: cffi_requests.Session) -> list[dict[str, 
 
 
 def deduplicate(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _normalize_text(value: Any) -> str:
+        text = str(value or "").strip().lower()
+        return re.sub(r"\s+", " ", text)
+
+    def _is_present(value: Any) -> bool:
+        if value is None:
+            return False
+        text = str(value).strip()
+        return bool(text) and text.upper() != "N/A"
+
+    def _completeness_score(job: dict[str, Any]) -> int:
+        # Prefer entries that keep more useful searchable/tracking fields.
+        fields = ("salary", "location", "url", "job_key", "remote")
+        return sum(1 for field in fields if _is_present(job.get(field)))
+
     seen: set[str] = set()
-    unique: list[dict[str, Any]] = []
+    unique_by_key: list[dict[str, Any]] = []
     for job in jobs:
         key = str(job.get("job_key") or "")
         if not key or key in seen:
             continue
         seen.add(key)
-        unique.append(job)
-    return unique
+        unique_by_key.append(job)
+
+    # Second pass: collapse equivalent "title + company" records, keeping the richest one.
+    best_by_identity: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for job in unique_by_key:
+        identity = f"{_normalize_text(job.get('title'))}::{_normalize_text(job.get('company'))}"
+        current_best = best_by_identity.get(identity)
+        if current_best is None:
+            best_by_identity[identity] = job
+            order.append(identity)
+            continue
+
+        current_score = _completeness_score(current_best)
+        candidate_score = _completeness_score(job)
+        if candidate_score > current_score:
+            best_by_identity[identity] = job
+
+    return [best_by_identity[i] for i in order]
 
 
 def save_json(jobs: list[dict[str, Any]]) -> tuple[str, int, int, int]:
