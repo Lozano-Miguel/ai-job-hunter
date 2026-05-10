@@ -15,6 +15,7 @@ from urllib.parse import quote_plus
 
 import pdfplumber
 import requests as std_requests
+from bs4 import BeautifulSoup
 from pyquery import PyQuery as pq
 from curl_cffi import requests as cffi_requests
 from dotenv import load_dotenv
@@ -144,7 +145,38 @@ def create_linkedin_session() -> cffi_requests.Session:
     return session
 
 
+def create_netempregos_session() -> cffi_requests.Session:
+    session = cffi_requests.Session(impersonate="chrome124")
+    session.headers.update(
+        {
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "pt-PT,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Referer": "https://www.net-empregos.com/",
+            "Connection": "keep-alive",
+        }
+    )
+    return session
+
+
+def create_sapo_session() -> cffi_requests.Session:
+    session = cffi_requests.Session(impersonate="chrome124")
+    session.headers.update(
+        {
+            "Referer": "https://emprego.sapo.pt/",
+            "Accept-Language": "pt-PT,pt;q=0.9,en-US;q=0.8",
+        }
+    )
+    return session
+
+
 DATE_FILTER_TO_LINKEDIN = {1: "r86400", 3: "r259200", 7: "r604800", 14: "r1209600"}
+
+DATE_FILTER_TO_SAPO = {
+    1: "ultimas-24-horas",
+    3: "ultimas-24-horas",  # Sapo has no 3-day option, fallback to 24h
+    7: "ultima-semana",
+    14: "ultima-semana",  # Sapo has no 14-day option, fallback to week
+}
 
 
 def build_linkedin_url(keyword: str, start: int) -> str:
@@ -244,6 +276,51 @@ def create_session() -> cffi_requests.Session:
 def prime_session(session: cffi_requests.Session) -> None:
     session.get(DOMAIN, timeout=30)
     time.sleep(random.uniform(2, 4))
+
+
+def parse_jobs_from_netempregos_html(html: str, keyword: str) -> list[dict[str, Any]]:
+    soup = BeautifulSoup(html, "html.parser")
+    job_cards = soup.select(".job-item") or soup.select(".oferta")
+    jobs: list[dict[str, Any]] = []
+
+    for card in job_cards:
+        # Title and URL
+        title_elem = card.select_one("h2 a") or card.select_one("a")
+        if not title_elem:
+            continue
+        title = title_elem.get_text(strip=True)
+        href = title_elem.get("href", "")
+        url = f"https://www.net-empregos.com{href}" if href.startswith("/") else href
+
+        # Job key from URL path — pattern is /123456/slug/
+        parts = [p for p in href.split("/") if p]
+        job_key = f"ne_{parts[0]}" if parts and parts[0].isdigit() else f"ne_{abs(hash(url))}"
+
+        # Company, location, salary — scraped from metadata text blocks
+        meta_items = [
+            t.strip()
+            for t in card.get_text(separator="|").split("|")
+            if t.strip() and len(t.strip()) > 2
+        ]
+        company = meta_items[1] if len(meta_items) > 1 else "N/A"
+        location = meta_items[2] if len(meta_items) > 2 else "N/A"
+        salary = next((m for m in meta_items if "€" in m or "eur" in m.lower()), "N/A")
+
+        jobs.append(
+            {
+                "title": title,
+                "company": company,
+                "location": location,
+                "salary": salary,
+                "url": url,
+                "job_key": job_key,
+                "keyword": keyword,
+                "source": "netempregos",
+                "scraped_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+
+    return jobs
 
 
 def scrape_indeed(keyword: str, session: cffi_requests.Session) -> list[dict[str, Any]]:
@@ -371,6 +448,118 @@ def scrape_itjobs(keyword: str) -> list[dict[str, Any]]:
     return jobs
 
 
+def scrape_netempregos(keyword: str, session: cffi_requests.Session) -> list[dict[str, Any]]:
+    jobs: list[dict[str, Any]] = []
+    city = LOCATION.split(",")[0].strip()  # Extract "Lisbon" from "Lisbon, Portugal"
+
+    for page in range(1, MAX_PAGES + 1):
+        url = (
+            f"https://www.net-empregos.com/pesquisa-empregos.asp"
+            f"?chaves={quote_plus(keyword)}&cidade={quote_plus(city)}&page={page}"
+        )
+        r = session.get(url, timeout=30)
+
+        # Redirect to login means bot was detected
+        if "loginc.asp" in r.url or r.status_code != 200:
+            print(f"[WARN] Net-Empregos blocked page {page} for '{keyword}' (status {r.status_code})")
+            break
+
+        page_jobs = parse_jobs_from_netempregos_html(r.text, keyword)
+        if not page_jobs:
+            break
+
+        jobs.extend(page_jobs)
+        time.sleep(random.uniform(3, 6))
+
+    return jobs
+
+
+def parse_jobs_from_sapo_html(html: str, keyword: str) -> tuple[list[dict[str, Any]], int]:
+    """Returns (jobs, total_pages)"""
+    soup = BeautifulSoup(html, "html.parser")
+    component = soup.find("search-results-component")
+
+    if not component or not component.has_attr(":offers"):
+        return [], 0
+
+    try:
+        jobs_raw = json.loads(component[":offers"])
+    except (json.JSONDecodeError, KeyError):
+        return [], 0
+
+    # Get total pages from pagination attribute
+    total_pages = 1
+    if component.has_attr(":pagination"):
+        try:
+            pagination = json.loads(component[":pagination"])
+            total = int(pagination.get("offers_total", 0))
+            size = int(pagination.get("size", 9)) or 9
+            total_pages = -(-total // size)  # ceiling division
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    jobs: list[dict[str, Any]] = []
+    for job in jobs_raw:
+        link = job.get("link") or job.get("url") or "N/A"
+        job_key = f"sapo_{abs(hash(link))}"
+
+        salary = "N/A"
+        sal_min = job.get("salary_min")
+        sal_max = job.get("salary_max")
+        if sal_min and sal_max:
+            salary = f"{sal_min}–{sal_max} €"
+        elif sal_min:
+            salary = f"From {sal_min} €"
+
+        jobs.append(
+            {
+                "title": job.get("offer_name") or "N/A",
+                "company": job.get("company_name") or "N/A",
+                "location": job.get("location") or "N/A",
+                "salary": salary,
+                "remote": job.get("remote_work", False),
+                "url": link,
+                "job_key": job_key,
+                "keyword": keyword,
+                "source": "sapo",
+                "scraped_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+
+    return jobs, total_pages
+
+
+def scrape_sapo(keyword: str, session: cffi_requests.Session) -> list[dict[str, Any]]:
+    jobs: list[dict[str, Any]] = []
+    date_param = DATE_FILTER_TO_SAPO.get(DATE_FILTER, "ultima-semana")
+
+    for page in range(1, MAX_PAGES + 1):
+        url = (
+            f"https://emprego.sapo.pt/offers"
+            f"?pesquisa={quote_plus(keyword)}"
+            f"&data-de-publicacao={date_param}"
+            f"&pagina={page}&ordem=relevancia"
+        )
+        r = session.get(url, timeout=30)
+        if r.status_code != 200:
+            print(f"[WARN] Sapo page {page} for '{keyword}' returned {r.status_code}")
+            break
+
+        page_jobs, total_pages = parse_jobs_from_sapo_html(r.text, keyword)
+        if not page_jobs:
+            break
+
+        jobs.extend(page_jobs)
+
+        # Stop early if we've reached the last real page
+        if page >= total_pages:
+            break
+
+        time.sleep(random.uniform(2, 5))
+
+    return jobs
+
+
 def deduplicate(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     seen: set[str] = set()
     unique: list[dict[str, Any]] = []
@@ -442,22 +631,28 @@ def _interactive_setup() -> list[str]:
 
     # 0) Sources
     print("Sources to scrape:")
-    print("  [1] All (Indeed + LinkedIn + ITJobs)")
+    print("  [1] All sources")
     print("  [2] Indeed only")
     print("  [3] LinkedIn only")
     print("  [4] ITJobs only")
-    print("  [5] Indeed + ITJobs")
-    print("  [6] LinkedIn + ITJobs")
+    print("  [5] Net-Empregos only")
+    print("  [6] Sapo only")
+    print("  [7] Indeed + ITJobs")
+    print("  [8] LinkedIn + ITJobs")
+    print("  [9] ITJobs + Net-Empregos + Sapo")
     source_choice = input("Choice [1]: ").strip()
     sources_map: dict[str, list[str]] = {
-        "1": ["indeed", "linkedin", "itjobs"],
+        "1": ["indeed", "linkedin", "itjobs", "netempregos", "sapo"],
         "2": ["indeed"],
         "3": ["linkedin"],
         "4": ["itjobs"],
-        "5": ["indeed", "itjobs"],
-        "6": ["linkedin", "itjobs"],
+        "5": ["netempregos"],
+        "6": ["sapo"],
+        "7": ["indeed", "itjobs"],
+        "8": ["linkedin", "itjobs"],
+        "9": ["itjobs", "netempregos", "sapo"],
     }
-    sources = sources_map.get(source_choice, ["indeed", "linkedin", "itjobs"])
+    sources = sources_map.get(source_choice, ["indeed", "linkedin", "itjobs", "netempregos", "sapo"])
 
     # 1) City / Location
     loc = input(f"Enter target city/location [{LOCATION}]: ").strip()
@@ -543,7 +738,13 @@ def main() -> int:
     print(f" Date filter: {_date_filter_label()}")
     print(f" Radius     : {RADIUS} miles")
     print(f" Max pages  : {MAX_PAGES}")
-    _source_names = {"indeed": "Indeed", "linkedin": "LinkedIn", "itjobs": "ITJobs"}
+    _source_names = {
+        "indeed": "Indeed",
+        "linkedin": "LinkedIn",
+        "itjobs": "ITJobs",
+        "netempregos": "Net-Empregos",
+        "sapo": "Sapo",
+    }
     sources_label = ", ".join(_source_names.get(s, s) for s in sources)
     print(f" Sources     : {sources_label}")
     print("─────────────────────────────────")
@@ -585,6 +786,8 @@ def main() -> int:
     all_jobs: list[dict[str, Any]] = []
     indeed_session = create_session() if "indeed" in sources else None
     linkedin_session = create_linkedin_session() if "linkedin" in sources else None
+    netempregos_session = create_netempregos_session() if "netempregos" in sources else None
+    sapo_session = create_sapo_session() if "sapo" in sources else None
 
     if indeed_session:
         prime_session(indeed_session)
@@ -599,6 +802,12 @@ def main() -> int:
         if "itjobs" in sources:
             print(f"[ITJobs] Scraping: '{title}'")
             all_jobs.extend(scrape_itjobs(title))
+        if "netempregos" in sources:
+            print(f"[Net-Empregos] Scraping: '{title}'")
+            all_jobs.extend(scrape_netempregos(title, netempregos_session))
+        if "sapo" in sources:
+            print(f"[Sapo] Scraping: '{title}'")
+            all_jobs.extend(scrape_sapo(title, sapo_session))
 
     unique_jobs = deduplicate(all_jobs)
     output_path, new_count, skipped_count, total_count = save_json(unique_jobs)
