@@ -340,6 +340,11 @@ def prime_session(session: cffi_requests.Session) -> None:
     time.sleep(random.uniform(2, 4))
 
 
+def prime_linkedin_session(session: cffi_requests.Session) -> None:
+    session_get_with_retry(session, "https://www.linkedin.com", timeout=30)
+    time.sleep(random.uniform(2, 4))
+
+
 def parse_jobs_from_netempregos_html(html: str, keyword: str) -> list[dict[str, Any]]:
     soup = BeautifulSoup(html, "html.parser")
     job_cards = soup.select(".job-item") or soup.select(".oferta")
@@ -944,6 +949,8 @@ def main() -> int:
 
     if indeed_session:
         prime_session(indeed_session)
+    if linkedin_session:
+        prime_linkedin_session(linkedin_session)
 
     for title in titles:
         if "indeed" in sources:
