@@ -1,0 +1,845 @@
+<!-- Open directly in browser: file:///.../output/dashboard.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Job Leads Dashboard</title>
+  <style>
+    :root {
+      --bg: #f6f8fb;
+      --card: #ffffff;
+      --text: #131722;
+      --muted: #5d6475;
+      --border: #e5e9f2;
+      --indeed: #2563eb;
+      --linkedin: #4f46e5;
+      --applied: #16a34a;
+      --interviewing: #eab308;
+      --shadow: 0 8px 20px rgba(15, 23, 42, 0.05);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .stat {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      box-shadow: var(--shadow);
+      padding: 14px;
+    }
+
+    .stat .label {
+      font-size: 12px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .stat .value {
+      font-size: 28px;
+      font-weight: 700;
+      margin-top: 6px;
+    }
+
+    .filters {
+      display: grid;
+      grid-template-columns: 200px 220px 1fr;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+
+    select,
+    input[type="search"] {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--card);
+      color: var(--text);
+      padding: 10px 12px;
+      font-size: 14px;
+      outline: none;
+    }
+
+    select:focus,
+    input[type="search"]:focus {
+      border-color: #94a3b8;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-left: 4px solid transparent;
+      border-radius: 16px;
+      box-shadow: var(--shadow);
+      padding: 20px;
+      transition: all 180ms ease;
+    }
+
+    .card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 14px 28px rgba(15, 23, 42, 0.1);
+    }
+
+    .card h3 {
+      margin: 0;
+      font-size: 15px;
+      line-height: 1.3;
+      font-weight: 600;
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+    }
+
+    .line {
+      margin: 4px 0 0;
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 10px;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 600;
+      color: #fff;
+    }
+
+    .badge.source-indeed {
+      background: var(--indeed);
+    }
+
+    .badge.source-linkedin {
+      background: var(--linkedin);
+    }
+
+    .badge.source-itjobs {
+      background: #0ea5e9;
+    }
+
+    .badge.source-netempregos {
+      background: #7c3aed;
+    }
+
+    .badge.source-sapo {
+      background: #dc2626;
+    }
+
+    .tag {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      color: var(--muted);
+      background: var(--bg);
+      border: 1px solid var(--border);
+      font-weight: 600;
+    }
+
+    .actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 14px;
+    }
+
+    .actions select {
+      flex: 1;
+      font-size: 13px;
+      padding: 7px 34px 7px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background-color: var(--bg);
+      color: var(--text);
+      cursor: pointer;
+      appearance: none;
+      -webkit-appearance: none;
+      -moz-appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 20 20' fill='none'%3E%3Cpath d='M5 7.5L10 12.5L15 7.5' stroke='%2364748b' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 10px center;
+      background-size: 14px 14px;
+    }
+
+    .actions select:focus {
+      border-color: #2563eb;
+      outline: none;
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+    }
+
+    .actions button {
+      border: none;
+      border-radius: 8px;
+      background: #2563eb;
+      color: #fff;
+      font-size: 13px;
+      font-weight: 500;
+      padding: 7px 16px;
+      cursor: pointer;
+      transition: background 180ms ease;
+    }
+
+    .actions button:hover {
+      background: #1d4ed8;
+    }
+
+    .card textarea {
+      width: 100%;
+      margin-top: 20px;
+      min-height: 45px;
+      padding: 9px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      font-size: 13px;
+      color: var(--text);
+      resize: none;
+      overflow: hidden;
+      font-family: inherit;
+      line-height: 1.5;
+      transition: all 180ms ease;
+    }
+
+    .card textarea:focus {
+      border-color: #2563eb;
+      outline: none;
+      background: #fff;
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+    }
+
+    .card.status-not_applied {
+      border-left-color: #e5e9f2;
+    }
+
+    .card.status-applied {
+      border-left-color: #2563eb;
+    }
+
+    .card.status-interviewing {
+      border-left-color: #eab308;
+    }
+
+    .card.status-rejected {
+      border-left-color: #ef4444;
+      opacity: 0.55;
+      filter: grayscale(30%);
+    }
+
+    .empty {
+      grid-column: 1 / -1;
+      text-align: center;
+      color: var(--muted);
+      background: var(--card);
+      border: 1px dashed var(--border);
+      border-radius: 12px;
+      padding: 28px;
+    }
+
+    @media (max-width: 960px) {
+      .stats {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .filters {
+        grid-template-columns: 1fr;
+      }
+
+      .grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 680px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <section class="stats">
+      <div class="stat">
+        <div class="label">Total Jobs</div>
+        <div id="stat-total" class="value">0</div>
+      </div>
+      <div class="stat">
+        <div class="label">Not Applied</div>
+        <div id="stat-not-applied" class="value">0</div>
+      </div>
+      <div class="stat">
+        <div class="label">Applied</div>
+        <div id="stat-applied" class="value">0</div>
+      </div>
+      <div class="stat">
+        <div class="label">Interviewing</div>
+        <div id="stat-interviewing" class="value">0</div>
+      </div>
+    </section>
+
+    <section class="filters">
+      <select id="source-filter" aria-label="Filter by source">
+        <option value="all">All Sources</option>
+        <option value="indeed">Indeed</option>
+        <option value="linkedin">LinkedIn</option>
+      </select>
+      <select id="status-filter" aria-label="Filter by status">
+        <option value="all">All Statuses</option>
+        <option value="not_applied">Not Applied</option>
+        <option value="applied">Applied</option>
+        <option value="interviewing">Interviewing</option>
+        <option value="rejected">Rejected</option>
+      </select>
+      <input id="search-filter" type="search" placeholder="Search by title or company" />
+    </section>
+
+    <section id="jobs-grid" class="grid"></section>
+  </div>
+
+  <script id="jobs-data" type="application/json">
+[
+  {
+    "title": "Frontend Developer",
+    "company": "Expleo Group",
+    "location": "Lisboa, Lisbon, Portugal",
+    "salary": "N/A",
+    "url": "https://pt.linkedin.com/jobs/view/frontend-developer-at-expleo-group-4411648575",
+    "job_key": "li_4411648575",
+    "keyword": "Frontend Development Intern",
+    "source": "linkedin",
+    "scraped_at": "2026-05-08T12:22:30.680427+00:00"
+  },
+  {
+    "title": "Full‑Stack Developer (React & .NET)",
+    "company": "Inetum",
+    "location": "Lisboa, Lisbon, Portugal",
+    "salary": "N/A",
+    "url": "https://pt.linkedin.com/jobs/view/full%E2%80%91stack-developer-react-net-at-inetum-4390360905",
+    "job_key": "li_4390360905",
+    "keyword": "Frontend Development Intern",
+    "source": "linkedin",
+    "scraped_at": "2026-05-08T12:22:30.681942+00:00"
+  },
+  {
+    "title": "Fullstack Engineer",
+    "company": "Inetum",
+    "location": "Lisboa, Lisbon, Portugal",
+    "salary": "N/A",
+    "url": "https://pt.linkedin.com/jobs/view/fullstack-engineer-at-inetum-4389497944",
+    "job_key": "li_4389497944",
+    "keyword": "Frontend Development Intern",
+    "source": "linkedin",
+    "scraped_at": "2026-05-08T12:22:30.683996+00:00"
+  },
+  {
+    "title": "Data Engineer Internship",
+    "company": "BNP Paribas CIB",
+    "location": "Lisboa, Lisbon, Portugal",
+    "salary": "N/A",
+    "url": "https://pt.linkedin.com/jobs/view/data-engineer-internship-at-bnp-paribas-cib-4388568864",
+    "job_key": "li_4388568864",
+    "keyword": "Frontend Development Intern",
+    "source": "linkedin",
+    "scraped_at": "2026-05-08T12:22:30.685377+00:00"
+  },
+  {
+    "title": "MuleSoft Developer",
+    "company": "Axians Portugal",
+    "location": "Lisboa, Lisbon, Portugal",
+    "salary": "N/A",
+    "url": "https://pt.linkedin.com/jobs/view/mulesoft-developer-at-axians-portugal-4411608370",
+    "job_key": "li_4411608370",
+    "keyword": "Frontend Development Intern",
+    "source": "linkedin",
+    "scraped_at": "2026-05-08T12:22:30.686800+00:00"
+  },
+  {
+    "title": "Backend Engineer",
+    "company": "Air Apps",
+    "location": "Lisboa, Lisbon, Portugal",
+    "salary": "N/A",
+    "url": "https://pt.linkedin.com/jobs/view/backend-engineer-at-air-apps-4411892164",
+    "job_key": "li_4411892164",
+    "keyword": "Frontend Development Intern",
+    "source": "linkedin",
+    "scraped_at": "2026-05-08T12:22:30.688212+00:00"
+  },
+  {
+    "title": "Talent Acquisition Intern - Temporary position, 6 months",
+    "company": "Powerdot",
+    "location": "Lisboa, Lisbon, Portugal",
+    "salary": "N/A",
+    "url": "https://pt.linkedin.com/jobs/view/talent-acquisition-intern-temporary-position-6-months-at-powerdot-4409930178",
+    "job_key": "li_4409930178",
+    "keyword": "Frontend Development Intern",
+    "source": "linkedin",
+    "scraped_at": "2026-05-08T12:22:30.689651+00:00"
+  },
+  {
+    "title": "Software Architect - Mobile",
+    "company": "Air Apps",
+    "location": "Lisboa, Lisbon, Portugal",
+    "salary": "N/A",
+    "url": "https://pt.linkedin.com/jobs/view/software-architect-mobile-at-air-apps-4411891220",
+    "job_key": "li_4411891220",
+    "keyword": "Frontend Development Intern",
+    "source": "linkedin",
+    "scraped_at": "2026-05-08T12:22:30.691006+00:00"
+  },
+  {
+    "title": "Marketing Intern",
+    "company": "Emma – The Sleep Company",
+    "location": "Lisboa, Lisbon, Portugal",
+    "salary": "N/A",
+    "url": "https://pt.linkedin.com/jobs/view/marketing-intern-at-emma-%E2%80%93-the-sleep-company-4390388362",
+    "job_key": "li_4390388362",
+    "keyword": "Frontend Development Intern",
+    "source": "linkedin",
+    "scraped_at": "2026-05-08T12:22:30.692371+00:00"
+  },
+  {
+    "title": "Senior Product Designer, Sportsbook",
+    "company": "Kaizen Gaming",
+    "location": "Lisboa, Lisbon, Portugal",
+    "salary": "N/A",
+    "url": "https://pt.linkedin.com/jobs/view/senior-product-designer-sportsbook-at-kaizen-gaming-4410495571",
+    "job_key": "li_4410495571",
+    "keyword": "Frontend Development Intern",
+    "source": "linkedin",
+    "scraped_at": "2026-05-08T12:22:30.693727+00:00"
+  },
+  {
+    "title": "Trainee Academy - IT Production Team",
+    "company": "Capgemini",
+    "location": "Lisboa, Lisbon, Portugal",
+    "salary": "N/A",
+    "url": "https://pt.linkedin.com/jobs/view/trainee-academy-it-production-team-at-capgemini-4401794356",
+    "job_key": "li_4401794356",
+    "keyword": "IT Intern",
+    "source": "linkedin",
+    "scraped_at": "2026-05-08T12:23:06.131987+00:00"
+  },
+  {
+    "title": "Data Integrity Internship",
+    "company": "BNP Paribas CIB",
+    "location": "Lisboa, Lisbon, Portugal",
+    "salary": "N/A",
+    "url": "https://pt.linkedin.com/jobs/view/data-integrity-internship-at-bnp-paribas-cib-4388572782",
+    "job_key": "li_4388572782",
+    "keyword": "IT Intern",
+    "source": "linkedin",
+    "scraped_at": "2026-05-08T12:23:06.135343+00:00"
+  },
+  {
+    "title": "Technology Graduate Program - Samlino Group",
+    "company": "Samlino Group",
+    "location": "Lisboa, Lisbon, Portugal",
+    "salary": "N/A",
+    "url": "https://pt.linkedin.com/jobs/view/technology-graduate-program-samlino-group-at-samlino-group-4411688970",
+    "job_key": "li_4411688970",
+    "keyword": "IT Intern",
+    "source": "linkedin",
+    "scraped_at": "2026-05-08T12:23:06.136707+00:00"
+  },
+  {
+    "title": "IT Security Consultant",
+    "company": "Inetum",
+    "location": "Lisboa, Lisbon, Portugal",
+    "salary": "N/A",
+    "url": "https://pt.linkedin.com/jobs/view/it-security-consultant-at-inetum-4371297510",
+    "job_key": "li_4371297510",
+    "keyword": "IT Intern",
+    "source": "linkedin",
+    "scraped_at": "2026-05-08T12:23:06.138402+00:00"
+  },
+  {
+    "title": "System Administrator",
+    "company": "Air Apps",
+    "location": "Lisboa, Lisbon, Portugal",
+    "salary": "N/A",
+    "url": "https://pt.linkedin.com/jobs/view/system-administrator-at-air-apps-4411889353",
+    "job_key": "li_4411889353",
+    "keyword": "IT Intern",
+    "source": "linkedin",
+    "scraped_at": "2026-05-08T12:23:06.139695+00:00"
+  },
+  {
+    "title": "Application Production Support",
+    "company": "Axians Portugal",
+    "location": "Lisboa, Lisbon, Portugal",
+    "salary": "N/A",
+    "url": "https://pt.linkedin.com/jobs/view/application-production-support-at-axians-portugal-4411606615",
+    "job_key": "li_4411606615",
+    "keyword": "IT Intern",
+    "source": "linkedin",
+    "scraped_at": "2026-05-08T12:23:06.141107+00:00"
+  },
+  {
+    "title": "Strategic Procurement Intern",
+    "company": "Emma – The Sleep Company",
+    "location": "Lisboa, Lisbon, Portugal",
+    "salary": "N/A",
+    "url": "https://pt.linkedin.com/jobs/view/strategic-procurement-intern-at-emma-%E2%80%93-the-sleep-company-4411373059",
+    "job_key": "li_4411373059",
+    "keyword": "IT Intern",
+    "source": "linkedin",
+    "scraped_at": "2026-05-08T12:23:06.142476+00:00"
+  },
+  {
+    "title": "Big data Engineer",
+    "company": "Consort Group",
+    "location": "Lisboa, Lisbon, Portugal",
+    "salary": "N/A",
+    "url": "https://pt.linkedin.com/jobs/view/big-data-engineer-at-consort-group-4410857637",
+    "job_key": "li_4410857637",
+    "keyword": "IT Intern",
+    "source": "linkedin",
+    "scraped_at": "2026-05-08T12:23:06.145265+00:00"
+  },
+  {
+    "title": "Fullstack Developer (.NET/ Angular)",
+    "company": "Adentis Portugal",
+    "location": "Lisboa, Lisbon, Portugal",
+    "salary": "N/A",
+    "url": "https://pt.linkedin.com/jobs/view/fullstack-developer-net-angular-at-adentis-portugal-4411381120",
+    "job_key": "li_4411381120",
+    "keyword": "Frontend Developer Intern",
+    "source": "linkedin",
+    "scraped_at": "2026-05-08T12:35:34.180363+00:00",
+    "applied": false,
+    "status": "not_applied"
+  },
+  {
+    "title": "Full Stack Engineer",
+    "company": "Direct Deal AI",
+    "location": "Lisboa, Lisbon, Portugal",
+    "salary": "N/A",
+    "url": "https://pt.linkedin.com/jobs/view/full-stack-engineer-at-direct-deal-ai-4411883676",
+    "job_key": "li_4411883676",
+    "keyword": "Junior Software Engineer",
+    "source": "linkedin",
+    "scraped_at": "2026-05-08T12:35:42.915136+00:00",
+    "applied": false,
+    "status": "not_applied"
+  },
+  {
+    "title": "Agentic AI integrator (m/f/d)",
+    "company": "AUTODOC",
+    "location": "Lisboa, Lisbon, Portugal",
+    "salary": "N/A",
+    "url": "https://pt.linkedin.com/jobs/view/agentic-ai-integrator-m-f-d-at-autodoc-4411357032",
+    "job_key": "li_4411357032",
+    "keyword": "Junior Software Engineer",
+    "source": "linkedin",
+    "scraped_at": "2026-05-08T12:35:42.916544+00:00",
+    "applied": false,
+    "status": "not_applied"
+  },
+  {
+    "title": "Software Engineer - Platform Team",
+    "company": "Finsolutia",
+    "location": "Lisboa, Lisbon, Portugal",
+    "salary": "N/A",
+    "url": "https://pt.linkedin.com/jobs/view/software-engineer-platform-team-at-finsolutia-4390369170",
+    "job_key": "li_4390369170",
+    "keyword": "Junior Software Engineer",
+    "source": "linkedin",
+    "scraped_at": "2026-05-08T12:35:42.917981+00:00",
+    "applied": false,
+    "status": "not_applied"
+  },
+  {
+    "title": ".NET/C# Developer",
+    "company": "Expleo Group",
+    "location": "Lisboa, Lisbon, Portugal",
+    "salary": "N/A",
+    "url": "https://pt.linkedin.com/jobs/view/net-c%23-developer-at-expleo-group-4411638731",
+    "job_key": "li_4411638731",
+    "keyword": "Junior Software Engineer",
+    "source": "linkedin",
+    "scraped_at": "2026-05-08T12:35:42.919543+00:00",
+    "applied": false,
+    "status": "not_applied"
+  },
+  {
+    "title": "Senior Fullstack Developer (Java)",
+    "company": "Inetum",
+    "location": "Lisboa, Lisbon, Portugal",
+    "salary": "N/A",
+    "url": "https://pt.linkedin.com/jobs/view/senior-fullstack-developer-java-at-inetum-4411667432",
+    "job_key": "li_4411667432",
+    "keyword": "Junior Software Engineer",
+    "source": "linkedin",
+    "scraped_at": "2026-05-08T12:35:42.922646+00:00",
+    "applied": false,
+    "status": "not_applied"
+  },
+  {
+    "title": "Technical Lead",
+    "company": "Siemens Energy",
+    "location": "Lisboa, Lisbon, Portugal",
+    "salary": "N/A",
+    "url": "https://pt.linkedin.com/jobs/view/technical-lead-at-siemens-energy-4411370213",
+    "job_key": "li_4411370213",
+    "keyword": "Junior Software Engineer",
+    "source": "linkedin",
+    "scraped_at": "2026-05-08T12:35:42.924047+00:00",
+    "applied": false,
+    "status": "not_applied"
+  }
+]
+  </script>
+
+  <script>
+    const jobsGrid = document.getElementById("jobs-grid");
+    const sourceFilter = document.getElementById("source-filter");
+    const statusFilter = document.getElementById("status-filter");
+    const searchFilter = document.getElementById("search-filter");
+    const statTotal = document.getElementById("stat-total");
+    const statNotApplied = document.getElementById("stat-not-applied");
+    const statApplied = document.getElementById("stat-applied");
+    const statInterviewing = document.getElementById("stat-interviewing");
+
+    let jobs = [];
+
+    function normalizeStatus(value) {
+      const status = String(value || "").trim().toLowerCase().replace(/\s+/g, "_");
+      if (["not_applied", "applied", "interviewing", "rejected"].includes(status)) {
+        return status;
+      }
+      return "not_applied";
+    }
+
+    function formatStatusLabel(status) {
+      if (status === "not_applied") return "Not Applied";
+      if (status === "applied") return "Applied";
+      if (status === "interviewing") return "Interviewing";
+      if (status === "rejected") return "Rejected";
+      return "Not Applied";
+    }
+
+    function formatDate(iso) {
+      if (!iso) return "N/A";
+      const date = new Date(iso);
+      if (Number.isNaN(date.getTime())) return "N/A";
+      return new Intl.DateTimeFormat("en-GB", {
+        day: "2-digit",
+        month: "short",
+        year: "numeric"
+      }).format(date);
+    }
+
+    function updateStats() {
+      const total = jobs.length;
+      let notApplied = 0;
+      let applied = 0;
+      let interviewing = 0;
+      for (const job of jobs) {
+        const status = normalizeStatus(job.status);
+        if (status === "not_applied") notApplied += 1;
+        if (status === "applied") applied += 1;
+        if (status === "interviewing") interviewing += 1;
+      }
+      statTotal.textContent = String(total);
+      statNotApplied.textContent = String(notApplied);
+      statApplied.textContent = String(applied);
+      statInterviewing.textContent = String(interviewing);
+    }
+
+    function matchesFilters(job) {
+      const sourceValue = sourceFilter.value;
+      const statusValue = statusFilter.value;
+      const query = searchFilter.value.trim().toLowerCase();
+
+      const sourceMatch = sourceValue === "all" || String(job.source || "").toLowerCase() === sourceValue;
+      const statusMatch = statusValue === "all" || normalizeStatus(job.status) === statusValue;
+      const haystack = `${job.title || ""} ${job.company || ""}`.toLowerCase();
+      const searchMatch = !query || haystack.includes(query);
+
+      return sourceMatch && statusMatch && searchMatch;
+    }
+
+    function applyCardState(card, status) {
+      card.classList.remove("status-not_applied", "status-applied", "status-interviewing", "status-rejected");
+      card.classList.add(`status-${status}`);
+    }
+
+    function render() {
+      jobsGrid.innerHTML = "";
+
+      const filteredJobs = jobs.filter(matchesFilters);
+      if (!filteredJobs.length) {
+        jobsGrid.innerHTML = '<div class="empty">No jobs match your filters.</div>';
+        return;
+      }
+
+      for (const job of filteredJobs) {
+        const status = normalizeStatus(job.status);
+        const source = String(job.source || "").toLowerCase();
+        const sourceConfig = {
+          indeed: { label: "Indeed", className: "source-indeed" },
+          linkedin: { label: "LinkedIn", className: "source-linkedin" },
+          itjobs: { label: "ITJobs", className: "source-itjobs" },
+          netempregos: { label: "Net-Empregos", className: "source-netempregos" },
+          sapo: { label: "Sapo", className: "source-sapo" }
+        };
+        const sourceInfo = sourceConfig[source] || { label: source || "Unknown", className: "source-indeed" };
+
+        const card = document.createElement("article");
+        card.className = "card";
+        applyCardState(card, status);
+
+        const salaryLine =
+          job.salary && String(job.salary).trim().toUpperCase() !== "N/A"
+            ? `<p class="line"><strong>Salary:</strong> ${job.salary}</p>`
+            : "";
+
+        card.innerHTML = `
+          <h3>${job.title || "Untitled role"}</h3>
+          <p class="line">${job.company || "N/A"} • ${job.location || "N/A"}</p>
+          ${salaryLine}
+          <div class="meta">
+            <span class="badge ${sourceInfo.className}">${sourceInfo.label}</span>
+            <span class="tag">${job.keyword || "N/A"}</span>
+            <span class="tag">${formatDate(job.scraped_at)}</span>
+          </div>
+          <div class="actions">
+            <select aria-label="Job status">
+              <option value="not_applied"${status === "not_applied" ? " selected" : ""}>Not Applied</option>
+              <option value="applied"${status === "applied" ? " selected" : ""}>Applied</option>
+              <option value="interviewing"${status === "interviewing" ? " selected" : ""}>Interviewing</option>
+              <option value="rejected"${status === "rejected" ? " selected" : ""}>Rejected</option>
+            </select>
+            <button type="button">Apply</button>
+          </div>
+          <textarea placeholder="Notes..." rows="1">${job.notes || ""}</textarea>
+        `;
+
+        const statusSelect = card.querySelector("select");
+        statusSelect.addEventListener("change", (event) => {
+          const newStatus = normalizeStatus(event.target.value);
+          const jobKey = job.job_key;
+          job.status = newStatus;
+          job.applied = newStatus === "applied" || newStatus === "interviewing";
+          applyCardState(card, newStatus);
+          updateStats();
+          if (statusFilter.value !== "all" && statusFilter.value !== newStatus) {
+            render();
+          }
+          fetch("http://localhost:8000/update-status", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              job_key: jobKey,
+              applied: newStatus === "applied",
+              status: newStatus
+            })
+          })
+            .then((r) => r.json())
+            .then((data) => {
+              if (!data.ok) console.error("[Dashboard] Save failed:", data);
+            })
+            .catch((err) => console.error("[Dashboard] Could not reach server:", err));
+        });
+
+        const applyButton = card.querySelector("button");
+        applyButton.addEventListener("click", () => {
+          if (job.url) {
+            window.open(job.url, "_blank", "noopener,noreferrer");
+          }
+        });
+
+        const notesTextarea = card.querySelector("textarea");
+        const autoResizeTextarea = () => {
+          notesTextarea.style.height = "auto";
+          notesTextarea.style.height = `${notesTextarea.scrollHeight}px`;
+        };
+        autoResizeTextarea();
+        notesTextarea.addEventListener("input", autoResizeTextarea);
+        notesTextarea.addEventListener("blur", () => {
+          const jobKey = job.job_key;
+          job.notes = notesTextarea.value;
+          fetch("http://localhost:8000/update-status", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              job_key: jobKey,
+              notes: notesTextarea.value
+            })
+          })
+            .then((r) => r.json())
+            .then((data) => {
+              if (!data.ok) console.error("[Dashboard] Save failed:", data);
+            })
+            .catch((err) => console.error("[Dashboard] Could not reach server:", err));
+        });
+
+        jobsGrid.appendChild(card);
+      }
+    }
+
+    async function loadJobs() {
+      try {
+        const response = await fetch("./job_leads.json?t=" + Date.now());
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        jobs = Array.isArray(data) ? data : [];
+        jobs = jobs.map((job) => ({
+          ...job,
+          status: normalizeStatus(job.status),
+          applied: typeof job.applied === "boolean" ? job.applied : normalizeStatus(job.status) !== "not_applied"
+        }));
+        updateStats();
+        render();
+      } catch (error) {
+        jobsGrid.innerHTML =
+          `<div class="empty">Could not load <code>job_leads.json</code>.<br>${String(error && error.message ? error.message : error)}</div>`;
+        console.error("Failed to load jobs:", error);
+      }
+    }
+
+    sourceFilter.addEventListener("change", render);
+    statusFilter.addEventListener("change", render);
+    searchFilter.addEventListener("input", render);
+
+    loadJobs();
+  </script>
+</body>
+</html>
