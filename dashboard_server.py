@@ -47,9 +47,16 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._send_json(400, {"ok": False, "error": "Invalid job_key"})
             return
 
-        applied = bool(payload.get("applied"))
-        status = str(payload.get("status") or "").strip()
-        if not status:
+        has_applied = "applied" in payload
+        has_status = "status" in payload
+        has_notes = "notes" in payload
+        if not (has_applied or has_status or has_notes):
+            self._send_json(400, {"ok": False, "error": "No fields to update"})
+            return
+        applied = bool(payload.get("applied")) if has_applied else None
+        status = str(payload.get("status") or "").strip() if has_status else None
+        notes = str(payload.get("notes") or "") if has_notes else None
+        if has_status and not status:
             self._send_json(400, {"ok": False, "error": "Missing status"})
             return
 
@@ -72,8 +79,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             if not isinstance(job, dict):
                 continue
             if str(job.get("job_key") or "") == job_key:
-                job["applied"] = applied
-                job["status"] = status
+                if has_applied:
+                    job["applied"] = applied
+                if has_status:
+                    job["status"] = status
+                if has_notes:
+                    job["notes"] = notes
                 found = True
                 break
 

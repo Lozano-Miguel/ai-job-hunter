@@ -8,12 +8,13 @@ import sys
 import threading
 import time
 import webbrowser
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote_plus
 
 import pdfplumber
+import requests as std_requests
 from pyquery import PyQuery as pq
 from curl_cffi import requests as cffi_requests
 from dotenv import load_dotenv
@@ -26,6 +27,8 @@ DOMAIN = "https://pt.indeed.com"
 DATE_FILTER = 1  # 1 = last 24h | 7 = last week
 RADIUS = 25
 MAX_PAGES = 3  # Pages per keyword (10 jobs/page)
+ITJOBS_LOCATION_ID = 14  # 14 = Lisboa. See itjobs.pt/api for other IDs
+ITJOBS_LIMIT = 10  # Results per page
 OUTPUT_FILE = "output/job_leads.json"
 SOURCES = ["indeed", "linkedin"]  # Toggle sources here
 
@@ -71,6 +74,7 @@ def _validate_job_titles(value: Any) -> list[str]:
 
 def generate_job_titles(cv_text: str) -> list[str]:
     load_dotenv()
+    os.getenv("ITJOBS_API_KEY")  # loaded from .env for scrape_itjobs
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
         print("[ERROR] GROQ_API_KEY missing. Add it to your .env file as GROQ_API_KEY=...")
@@ -289,6 +293,84 @@ def scrape_linkedin(keyword: str, session: cffi_requests.Session) -> list[dict[s
     return jobs
 
 
+def scrape_itjobs(keyword: str) -> list[dict[str, Any]]:
+    load_dotenv()
+    api_key = os.getenv("ITJOBS_API_KEY")
+    if not api_key:
+        print("[ERROR] ITJOBS_API_KEY missing from .env")
+        return []
+
+    jobs: list[dict[str, Any]] = []
+    for page in range(1, MAX_PAGES + 1):
+        params = {
+            "api_key": api_key,
+            "q": keyword,
+            "limit": ITJOBS_LIMIT,
+            "page": page,
+            "location": ITJOBS_LOCATION_ID,
+        }
+        r = std_requests.post(
+            "https://api.itjobs.pt/job/search.json",
+            data=params,
+            headers={
+                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "Accept": "application/json, text/plain, */*",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            timeout=30,
+        )
+        if r.status_code != 200:
+            print(f"[WARN] ITJobs API error {r.status_code} for '{keyword}'")
+            break
+
+        data = r.json()
+        results = data.get("results", [])
+        if not results:
+            break
+
+        # Filter by date on our side since the API has no date param
+        cutoff = datetime.now(timezone.utc) - timedelta(days=DATE_FILTER)
+        for job in results:
+            published_str = job.get("publishedAt", "")
+            try:
+                published = datetime.strptime(published_str, "%Y-%m-%d %H:%M:%S").replace(
+                    tzinfo=timezone.utc
+                )
+            except ValueError:
+                continue
+            if published < cutoff:
+                continue
+
+            job_id = job.get("id")
+            slug = job.get("slug", "")
+            salary = "N/A"
+            if job.get("salaryMin") and job.get("salaryMax"):
+                salary = f"{job['salaryMin']}–{job['salaryMax']} €/yr"
+            elif job.get("salaryMin"):
+                salary = f"From {job['salaryMin']} €/yr"
+
+            locations = job.get("locations", [])
+            location_str = ", ".join(l["name"] for l in locations) if locations else "N/A"
+
+            jobs.append(
+                {
+                    "title": job.get("title", "N/A").strip(),
+                    "company": job.get("company", {}).get("name", "N/A"),
+                    "location": location_str,
+                    "salary": salary,
+                    "url": f"https://www.itjobs.pt/oferta/{job_id}/{slug}",
+                    "job_key": f"itjobs_{job_id}",
+                    "keyword": keyword,
+                    "source": "itjobs",
+                    "scraped_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+
+        time.sleep(random.uniform(1, 2))  # API is friendly but be polite
+
+    return jobs
+
+
 def deduplicate(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     seen: set[str] = set()
     unique: list[dict[str, Any]] = []
@@ -332,6 +414,7 @@ def save_json(jobs: list[dict[str, Any]]) -> tuple[str, int, int, int]:
         new_job = dict(job)
         new_job["applied"] = False
         new_job["status"] = "not_applied"
+        new_job["notes"] = ""
         merged_jobs.append(new_job)
         existing_by_key[job_key] = new_job
         new_count += 1
@@ -359,16 +442,22 @@ def _interactive_setup() -> list[str]:
 
     # 0) Sources
     print("Sources to scrape:")
-    print("  [1] Both Indeed + LinkedIn (default)")
+    print("  [1] All (Indeed + LinkedIn + ITJobs)")
     print("  [2] Indeed only")
     print("  [3] LinkedIn only")
+    print("  [4] ITJobs only")
+    print("  [5] Indeed + ITJobs")
+    print("  [6] LinkedIn + ITJobs")
     source_choice = input("Choice [1]: ").strip()
     sources_map: dict[str, list[str]] = {
-        "1": ["indeed", "linkedin"],
+        "1": ["indeed", "linkedin", "itjobs"],
         "2": ["indeed"],
         "3": ["linkedin"],
+        "4": ["itjobs"],
+        "5": ["indeed", "itjobs"],
+        "6": ["linkedin", "itjobs"],
     }
-    sources = sources_map.get(source_choice, ["indeed", "linkedin"])
+    sources = sources_map.get(source_choice, ["indeed", "linkedin", "itjobs"])
 
     # 1) City / Location
     loc = input(f"Enter target city/location [{LOCATION}]: ").strip()
@@ -454,12 +543,39 @@ def main() -> int:
     print(f" Date filter: {_date_filter_label()}")
     print(f" Radius     : {RADIUS} miles")
     print(f" Max pages  : {MAX_PAGES}")
-    sources_label = ", ".join("Indeed" if s == "indeed" else "LinkedIn" for s in sources)
+    _source_names = {"indeed": "Indeed", "linkedin": "LinkedIn", "itjobs": "ITJobs"}
+    sources_label = ", ".join(_source_names.get(s, s) for s in sources)
     print(f" Sources     : {sources_label}")
     print("─────────────────────────────────")
 
     if DEBUG_KEYWORD_OVERRIDE:
         titles = [DEBUG_KEYWORD_OVERRIDE]
+    elif "--no-groq" in sys.argv:
+        out_path = Path(OUTPUT_FILE)
+        if not out_path.exists():
+            print("[ERROR] No previous run found. Run without --no-groq first.")
+            return 1
+        try:
+            previous_jobs = json.loads(out_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            print("[ERROR] No previous run found. Run without --no-groq first.")
+            return 1
+        seen_keywords: set[str] = set()
+        titles = []
+        if isinstance(previous_jobs, list):
+            for job in previous_jobs:
+                if not isinstance(job, dict):
+                    continue
+                keyword = str(job.get("keyword") or "").strip()
+                if keyword and keyword not in seen_keywords:
+                    seen_keywords.add(keyword)
+                    titles.append(keyword)
+        if not titles:
+            print("[ERROR] No previous run found. Run without --no-groq first.")
+            return 1
+        print(f"[Groq] Skipped — reusing {len(titles)} keywords from last run:")
+        for i, t in enumerate(titles, start=1):
+            print(f"  [{i}] {t}")
     else:
         titles = generate_job_titles(cv_text)
         print(f"[Groq] Generated {len(titles)} job titles:")
@@ -480,6 +596,9 @@ def main() -> int:
         if "linkedin" in sources:
             print(f"[LinkedIn] Scraping: '{title}'")
             all_jobs.extend(scrape_linkedin(title, linkedin_session))
+        if "itjobs" in sources:
+            print(f"[ITJobs] Scraping: '{title}'")
+            all_jobs.extend(scrape_itjobs(title))
 
     unique_jobs = deduplicate(all_jobs)
     output_path, new_count, skipped_count, total_count = save_json(unique_jobs)
@@ -493,6 +612,7 @@ def main() -> int:
     print(f" Total in file   : {total_count}")
     print(f" Date filter       : {_date_filter_label()}")
     print(f" Location          : {LOCATION}")
+    print(f" Sources           : {sources_label}")
     print(f" Output            : {output_path}")
     print("══════════════════════════════════════")
     return 0
