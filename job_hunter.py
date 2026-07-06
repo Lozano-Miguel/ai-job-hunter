@@ -95,6 +95,20 @@ def session_get_with_retry(session: cffi_requests.Session, url: str, **kwargs: A
     return session.get(url, **kwargs)
 
 
+@retry_http_get
+def _itjobs_post_with_retry(params: dict[str, Any]) -> Any:
+    return std_requests.post(
+        "https://api.itjobs.pt/job/search.json",
+        data=params,
+        headers={
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+        timeout=30,
+    )
+
+
 def extract_cv_text(pdf_path: str) -> str:
     with pdfplumber.open(pdf_path) as pdf:
         parts: list[str] = []
@@ -403,11 +417,8 @@ def parse_jobs_from_netempregos_html(html: str, keyword: str) -> list[dict[str, 
                 company = meta_items[1]
             if location == "N/A" and len(meta_items) > 2:
                 location = meta_items[2]
-        salary_gen = (
-            m
-            for m in card.stripped_strings
-            if "€" in m or "eur" in m.lower()
-        )
+        salary_pattern = re.compile(r"\d[\d.,]*\s*(€|eur\b)|€\s*\d", re.I)
+        salary_gen = (m for m in card.stripped_strings if salary_pattern.search(m))
         salary = next(salary_gen, "N/A")
 
         jobs.append(
@@ -456,15 +467,15 @@ def scrape_linkedin(keyword: str, session: cffi_requests.Session) -> list[dict[s
         start = page_index * 25
         url = build_linkedin_url(keyword, start)
         r = session_get_with_retry(session, url, timeout=30)
-        if not r.text.strip():
-            print(f"[WARN] LinkedIn returned empty body for '{keyword}' page {page_index + 1}")
-            print(f"       Status: {r.status_code} | URL: {url}")
-            break
         if r.status_code == 429:
             print(f"[WARN] LinkedIn rate limited on '{keyword}', stopping.")
             break
         if r.status_code != 200:
             print(f"[WARN] LinkedIn page {page_index + 1} for '{keyword}' returned {r.status_code}")
+            break
+        if not r.text.strip():
+            print(f"[WARN] LinkedIn returned empty body for '{keyword}' page {page_index + 1}")
+            print(f"       Status: {r.status_code} | URL: {url}")
             break
         page_jobs = parse_jobs_from_linkedin_html(r.text, keyword)
         if not page_jobs:
@@ -489,21 +500,17 @@ def scrape_itjobs(keyword: str) -> list[dict[str, Any]]:
             "page": page,
             "location": ITJOBS_LOCATION_ID,
         }
-        r = std_requests.post(
-            "https://api.itjobs.pt/job/search.json",
-            data=params,
-            headers={
-                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                "Accept": "application/json, text/plain, */*",
-                "Content-Type": "application/x-www-form-urlencoded",
-            },
-            timeout=30,
-        )
+        r = _itjobs_post_with_retry(params)
         if r.status_code != 200:
             print(f"[WARN] ITJobs API error {r.status_code} for '{keyword}'")
             break
 
-        data = r.json()
+        try:
+            data = r.json()
+        except ValueError:
+            print(f"[WARN] ITJobs returned invalid JSON for '{keyword}'")
+            break
+
         results = data.get("results", [])
         if not results:
             break
@@ -516,7 +523,7 @@ def scrape_itjobs(keyword: str) -> list[dict[str, Any]]:
                 published = datetime.strptime(published_str, "%Y-%m-%d %H:%M:%S").replace(
                     tzinfo=timezone.utc
                 )
-            except ValueError:
+            except (ValueError, TypeError):
                 continue
             if published < cutoff:
                 continue
@@ -530,13 +537,17 @@ def scrape_itjobs(keyword: str) -> list[dict[str, Any]]:
                 salary = f"From {job['salaryMin']} €/yr"
 
             locations = job.get("locations", [])
-            location_str = ", ".join(l["name"] for l in locations) if locations else "N/A"
+            location_str = (
+                ", ".join(l.get("name", "") for l in locations if isinstance(l, dict))
+                if locations
+                else "N/A"
+            )
 
             jobs.append(
                 {
-                    "title": job.get("title", "N/A").strip(),
-                    "company": job.get("company", {}).get("name", "N/A"),
-                    "location": location_str,
+                    "title": (job.get("title") or "N/A").strip(),
+                    "company": (job.get("company") or {}).get("name") or "N/A",
+                    "location": location_str or "N/A",
                     "salary": salary,
                     "url": f"https://www.itjobs.pt/oferta/{job_id}/{slug}",
                     "job_key": f"itjobs_{job_id}",
@@ -551,9 +562,23 @@ def scrape_itjobs(keyword: str) -> list[dict[str, Any]]:
     return jobs
 
 
+EN_TO_PT_CITY = {
+    "lisbon": "Lisboa",
+    "oporto": "Porto",
+    "porto": "Porto",
+    "leiria": "Leiria",
+    "braga": "Braga",
+    "coimbra": "Coimbra",
+    "faro": "Faro",
+    "setubal": "Setúbal",
+    "aveiro": "Aveiro",
+}
+
+
 def scrape_netempregos(keyword: str, session: cffi_requests.Session) -> list[dict[str, Any]]:
     jobs: list[dict[str, Any]] = []
-    city = LOCATION.split(",")[0].strip()  # Extract "Lisbon" from "Lisbon, Portugal"
+    raw_city = LOCATION.split(",")[0].strip()  # Extract "Lisbon" from "Lisbon, Portugal"
+    city = EN_TO_PT_CITY.get(raw_city.lower(), raw_city)
 
     for page in range(1, MAX_PAGES + 1):
         url = (
@@ -586,7 +611,7 @@ def scrape_netempregos(keyword: str, session: cffi_requests.Session) -> list[dic
         page_jobs = parse_jobs_from_netempregos_html(r.text, keyword)
         if not page_jobs:
             if login_wall:
-                print(f"[WARN] Net-Empregos blocked page {page} for '{keyword}' (status {r.status_code})")
+                print(f"[WARN] Net-Empregos login wall detected on page {page} for '{keyword}'")
             break
 
         jobs.extend(page_jobs)
@@ -756,16 +781,17 @@ def save_json(jobs: list[dict[str, Any]]) -> tuple[str, int, int, int]:
             skipped_count += 1
             continue
         new_job = dict(job)
-        new_job["applied"] = False
         new_job["status"] = "not_applied"
         new_job["notes"] = ""
         merged_jobs.append(new_job)
         existing_by_key[job_key] = new_job
         new_count += 1
 
-    out_path.write_text(
+    tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
+    tmp_path.write_text(
         json.dumps(merged_jobs, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
+    os.replace(tmp_path, out_path)
     return str(out_path), new_count, skipped_count, len(merged_jobs)
 
 
@@ -850,11 +876,16 @@ def _interactive_setup() -> list[str]:
 
 def main() -> int:
     if "--dashboard" in sys.argv:
-        from dashboard_server import main as run_server
+        from dashboard_server import create_server, main as run_server
 
-        thread = threading.Thread(target=run_server, daemon=True)
+        try:
+            server = create_server()
+        except OSError as err:
+            print(f"[ERROR] Could not start dashboard server on port 8000: {err}")
+            return 1
+
+        thread = threading.Thread(target=run_server, args=(server,), daemon=True)
         thread.start()
-        time.sleep(1)
         webbrowser.open("http://localhost:8000/dashboard.html")
         print("[Dashboard] Open at http://localhost:8000/dashboard.html — press Ctrl+C to stop")
         try:
@@ -955,22 +986,36 @@ def main() -> int:
     for title in titles:
         if "indeed" in sources:
             print(f"[Indeed] Scraping: '{title}'")
-            all_jobs.extend(scrape_indeed(title, indeed_session))
+            try:
+                all_jobs.extend(scrape_indeed(title, indeed_session))
+            except Exception as err:
+                print(f"[ERROR] indeed failed for '{title}': {err}")
         if "linkedin" in sources:
             print(f"[LinkedIn] Scraping: '{title}'")
-            all_jobs.extend(scrape_linkedin(title, linkedin_session))
+            try:
+                all_jobs.extend(scrape_linkedin(title, linkedin_session))
+            except Exception as err:
+                print(f"[ERROR] linkedin failed for '{title}': {err}")
         if "itjobs" in sources:
             print(f"[ITJobs] Scraping: '{title}'")
-            all_jobs.extend(scrape_itjobs(title))
+            try:
+                all_jobs.extend(scrape_itjobs(title))
+            except Exception as err:
+                print(f"[ERROR] itjobs failed for '{title}': {err}")
         if "netempregos" in sources:
             print(f"[Net-Empregos] Scraping: '{title}'")
-            all_jobs.extend(scrape_netempregos(title, netempregos_session))
+            try:
+                all_jobs.extend(scrape_netempregos(title, netempregos_session))
+            except Exception as err:
+                print(f"[ERROR] netempregos failed for '{title}': {err}")
         if "sapo" in sources:
             print(f"[Sapo] Scraping: '{title}'")
-            all_jobs.extend(scrape_sapo(title, sapo_session))
+            try:
+                all_jobs.extend(scrape_sapo(title, sapo_session))
+            except Exception as err:
+                print(f"[ERROR] sapo failed for '{title}': {err}")
 
-    unique_jobs = deduplicate(all_jobs)
-    output_path, new_count, skipped_count, total_count = save_json(unique_jobs)
+        output_path, new_count, skipped_count, total_count = save_json(deduplicate(all_jobs))
 
     print("══════════════════════════════════════")
     print(" Job Hunter Complete")

@@ -4,13 +4,13 @@ __pycache__/
 *.pyo
 *.pyd
 .Python
-
+IMPLEMENTATION_PLAN.md
 # Virtual environments
 .venv/
 venv/
 ENV/
 env/
-
+*.pdf
 # Environment files / secrets
 .env
 

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import os
 import re
@@ -47,13 +49,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._send_json(400, {"ok": False, "error": "Invalid job_key"})
             return
 
-        has_applied = "applied" in payload
         has_status = "status" in payload
         has_notes = "notes" in payload
-        if not (has_applied or has_status or has_notes):
+        if not (has_status or has_notes):
             self._send_json(400, {"ok": False, "error": "No fields to update"})
             return
-        applied = bool(payload.get("applied")) if has_applied else None
         status = str(payload.get("status") or "").strip() if has_status else None
         notes = str(payload.get("notes") or "") if has_notes else None
         if has_status and not status:
@@ -79,8 +79,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             if not isinstance(job, dict):
                 continue
             if str(job.get("job_key") or "") == job_key:
-                if has_applied:
-                    job["applied"] = applied
                 if has_status:
                     job["status"] = status
                 if has_notes:
@@ -92,20 +90,23 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._send_json(404, {"ok": False, "error": "job_key not found"})
             return
 
-        with open(JOB_LEADS_PATH, "w", encoding="utf-8") as f:
+        tmp_path = JOB_LEADS_PATH + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(jobs, f, ensure_ascii=False, indent=2)
             f.write("\n")
+        os.replace(tmp_path, JOB_LEADS_PATH)
 
         self._send_json(200, {"ok": True})
 
 
-def main() -> None:
+def create_server() -> HTTPServer:
     HTTPServer.allow_reuse_address = True
-    try:
-        server = HTTPServer(("localhost", 8000), DashboardHandler)
-    except OSError:
-        print("[ERROR] Port 8000 is already in use. Run: fuser -k 8000/tcp and try again.")
-        return
+    return HTTPServer(("localhost", 8000), DashboardHandler)
+
+
+def main(server: HTTPServer | None = None) -> None:
+    if server is None:
+        server = create_server()
     print("[Dashboard] Running at http://localhost:8000/dashboard.html")
     server.serve_forever()
 

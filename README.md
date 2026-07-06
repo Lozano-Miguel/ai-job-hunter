@@ -21,7 +21,6 @@ A local Python CLI that reads your CV, generates job-search keywords with Groq, 
   - by `job_key`
   - by normalized `title + company`, keeping the most complete entry
 - Incremental persistence to `output/job_leads.json` with tracking fields:
-  - `applied`
   - `status` (`not_applied`, `applied`, `interviewing`, `rejected`)
   - `notes`
 - Built-in dashboard mode with local status/notes updates
@@ -93,7 +92,7 @@ Results are written to:
 Each item includes fields such as:
 - `title`, `company`, `location`, `salary`, `url`
 - `job_key`, `keyword`, `source`, `scraped_at`
-- `applied`, `status`, `notes`
+- `status`, `notes`
 
 ## Project files
 
