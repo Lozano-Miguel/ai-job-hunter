@@ -348,7 +348,7 @@ def parse_jobs_from_html(html: str, keyword: str) -> list[dict[str, Any]]:
 
 
 def create_session() -> cffi_requests.Session:
-    return cffi_requests.Session(impersonate="chrome124")
+    return cffi_requests.Session(impersonate="safari15_5")
 
 
 def prime_session(session: cffi_requests.Session) -> None:
