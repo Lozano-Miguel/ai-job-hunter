@@ -330,6 +330,11 @@ def parse_jobs_from_html(html: str, keyword: str) -> list[dict[str, Any]]:
         if isinstance(salary_snippet, dict) and salary_snippet.get("text"):
             salary = str(salary_snippet["text"])
 
+        posted_at = ""
+        pub_date_ms = job.get("pubDate")
+        if pub_date_ms and isinstance(pub_date_ms, (int, float)):
+            posted_at = datetime.fromtimestamp(pub_date_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+
         jobs.append(
             {
                 "title": job.get("displayTitle") or job.get("title") or "N/A",
@@ -341,6 +346,7 @@ def parse_jobs_from_html(html: str, keyword: str) -> list[dict[str, Any]]:
                 "keyword": keyword,
                 "source": "indeed",
                 "scraped_at": datetime.now(timezone.utc).isoformat(),
+                "posted_at": posted_at,
             }
         )
 
