@@ -5,17 +5,25 @@ __pycache__/
 *.pyd
 .Python
 IMPLEMENTATION_PLAN.md
+plan-*.md
+
 # Virtual environments
 .venv/
 venv/
 ENV/
 env/
+
+# User files
 *.pdf
+
 # Environment files / secrets
 .env
 
 # Outputs
 output/
+
+# Claude Code
+.claude/
 
 # OS / editor noise
 .DS_Store

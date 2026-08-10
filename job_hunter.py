@@ -34,7 +34,7 @@ ITJOBS_LOCATION_ID = 14  # 14 = Lisboa. See itjobs.pt/api for other IDs
 ITJOBS_LIMIT = 10  # Results per page
 OUTPUT_FILE = "output/job_leads.json"
 # Used when the source menu choice is blank or not in 1–9 (see _interactive_setup).
-SOURCES = ["indeed", "linkedin", "itjobs", "netempregos", "sapo"]
+SOURCES = ["indeed", "linkedin", "itjobs", "netempregos", "sapo", "landingjobs"]
 
 # Use this to test one keyword in Step 3 without changing the rest of the flow.
 DEBUG_KEYWORD_OVERRIDE: str | None = None
@@ -708,6 +708,88 @@ def scrape_sapo(keyword: str, session: cffi_requests.Session) -> list[dict[str, 
     return jobs
 
 
+LANDING_JOBS_API = "https://landing.jobs/api/v1/jobs"
+LANDING_JOBS_LIMIT = 50
+
+
+def scrape_landingjobs(keyword: str) -> list[dict[str, Any]]:
+    keyword_lower = keyword.lower()
+    keyword_words = keyword_lower.split()
+    jobs: list[dict[str, Any]] = []
+    offset = 0
+
+    while True:
+        r = std_requests.get(
+            LANDING_JOBS_API,
+            params={"limit": LANDING_JOBS_LIMIT, "offset": offset},
+            headers={"Accept": "application/json"},
+            timeout=30,
+        )
+        if r.status_code != 200:
+            print(f"[WARN] Landing.jobs API returned {r.status_code}")
+            break
+
+        try:
+            data = r.json()
+        except ValueError:
+            print("[WARN] Landing.jobs returned invalid JSON")
+            break
+
+        if not isinstance(data, list) or not data:
+            break
+
+        for job in data:
+            title = (job.get("title") or "N/A").strip()
+            tags = job.get("tags") or []
+            haystack = f"{title} {' '.join(str(t) for t in tags)}".lower()
+            if not all(w in haystack for w in keyword_words):
+                continue
+
+            locations = job.get("locations") or []
+            location_str = (
+                ", ".join(l.get("city", "") for l in locations if isinstance(l, dict))
+                if locations
+                else "N/A"
+            )
+
+            salary = "N/A"
+            sal_low = job.get("gross_salary_low")
+            sal_high = job.get("gross_salary_high")
+            currency = job.get("currency_code", "EUR")
+            if sal_low and sal_high:
+                salary = f"{sal_low}–{sal_high} {currency}"
+            elif sal_low:
+                salary = f"From {sal_low} {currency}"
+
+            job_id = job.get("id")
+            job_url = job.get("url") or ""
+            company = "N/A"
+            url_parts = job_url.split("/at/")
+            if len(url_parts) > 1:
+                slug = url_parts[1].split("/")[0]
+                company = slug.replace("-", " ").title()
+            jobs.append(
+                {
+                    "title": title,
+                    "company": company,
+                    "location": location_str or "N/A",
+                    "salary": salary,
+                    "url": job_url or f"https://landing.jobs/at/job/{job_id}",
+                    "job_key": f"landing_{job_id}",
+                    "keyword": keyword,
+                    "source": "landingjobs",
+                    "scraped_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+
+        if len(data) < LANDING_JOBS_LIMIT:
+            break
+        offset += LANDING_JOBS_LIMIT
+        time.sleep(random.uniform(1, 2))
+
+    return jobs
+
+
 def deduplicate(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     def _normalize_text(value: Any) -> str:
         text = str(value or "").strip().lower()
@@ -812,26 +894,28 @@ def _interactive_setup() -> list[str]:
 
     # 0) Sources
     print("Sources to scrape:")
-    print("  [1] All sources")
-    print("  [2] Indeed only")
-    print("  [3] LinkedIn only")
-    print("  [4] ITJobs only")
-    print("  [5] Net-Empregos only")
-    print("  [6] Sapo only")
-    print("  [7] Indeed + ITJobs")
-    print("  [8] LinkedIn + ITJobs")
-    print("  [9] ITJobs + Net-Empregos + Sapo")
+    print("  [1]  All sources")
+    print("  [2]  Indeed only")
+    print("  [3]  LinkedIn only")
+    print("  [4]  ITJobs only")
+    print("  [5]  Net-Empregos only")
+    print("  [6]  Sapo only")
+    print("  [7]  Landing.jobs only")
+    print("  [8]  Indeed + ITJobs")
+    print("  [9]  LinkedIn + ITJobs")
+    print("  [10] ITJobs + Net-Empregos + Sapo")
     source_choice = input("Choice [1]: ").strip()
     sources_map: dict[str, list[str]] = {
-        "1": ["indeed", "linkedin", "itjobs", "netempregos", "sapo"],
+        "1": ["indeed", "linkedin", "itjobs", "netempregos", "sapo", "landingjobs"],
         "2": ["indeed"],
         "3": ["linkedin"],
         "4": ["itjobs"],
         "5": ["netempregos"],
         "6": ["sapo"],
-        "7": ["indeed", "itjobs"],
-        "8": ["linkedin", "itjobs"],
-        "9": ["itjobs", "netempregos", "sapo"],
+        "7": ["landingjobs"],
+        "8": ["indeed", "itjobs"],
+        "9": ["linkedin", "itjobs"],
+        "10": ["itjobs", "netempregos", "sapo"],
     }
     sources = sources_map.get(source_choice, list(SOURCES))
 
@@ -933,6 +1017,7 @@ def main() -> int:
         "itjobs": "ITJobs",
         "netempregos": "Net-Empregos",
         "sapo": "Sapo",
+        "landingjobs": "Landing.jobs",
     }
     sources_label = ", ".join(_source_names.get(s, s) for s in sources)
     print(f" Sources     : {sources_label}")
@@ -1014,6 +1099,12 @@ def main() -> int:
                 all_jobs.extend(scrape_sapo(title, sapo_session))
             except Exception as err:
                 print(f"[ERROR] sapo failed for '{title}': {err}")
+        if "landingjobs" in sources:
+            print(f"[Landing.jobs] Scraping: '{title}'")
+            try:
+                all_jobs.extend(scrape_landingjobs(title))
+            except Exception as err:
+                print(f"[ERROR] landingjobs failed for '{title}': {err}")
 
         output_path, new_count, skipped_count, total_count = save_json(deduplicate(all_jobs))
 
