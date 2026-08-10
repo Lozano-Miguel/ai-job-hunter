@@ -1105,6 +1105,28 @@ def save_json(jobs: list[dict[str, Any]]) -> tuple[str, int, int, int]:
     return str(out_path), new_count, skipped_count, len(merged_jobs)
 
 
+BANNER = r"""
+     ██╗ ██████╗ ██████╗       ██╗  ██╗██╗   ██╗███╗   ██╗████████╗███████╗██████╗
+     ██║██╔═══██╗██╔══██╗      ██║  ██║██║   ██║████╗  ██║╚══██╔══╝██╔════╝██╔══██╗
+     ██║██║   ██║██████╔╝█████╗███████║██║   ██║██╔██╗ ██║   ██║   █████╗  ██████╔╝
+██   ██║██║   ██║██╔══██╗╚════╝██╔══██║██║   ██║██║╚██╗██║   ██║   ██╔══╝  ██╔══██╗
+╚█████╔╝╚██████╔╝██████╔╝      ██║  ██║╚██████╔╝██║ ╚████║   ██║   ███████╗██║  ██║
+ ╚════╝  ╚═════╝ ╚═════╝       ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝   ╚═╝   ╚══════╝╚═╝  ╚═╝
+"""
+
+
+def _clear() -> None:
+    os.system("cls" if os.name == "nt" else "clear")
+
+
+def _header(subtitle: str = "") -> None:
+    _clear()
+    print(BANNER)
+    if subtitle:
+        print(f"  {subtitle}")
+        print()
+
+
 def _date_filter_label() -> str:
     if int(DATE_FILTER) == 1:
         return "Last 24 hours"
@@ -1120,65 +1142,77 @@ def _date_filter_label() -> str:
 def _interactive_setup() -> list[str]:
     global LOCATION, DATE_FILTER, RADIUS, MAX_PAGES
 
-    # 0) Sources
-    print("Sources to scrape:")
-    print("  [1]  All sources")
-    print("  [2]  Indeed only")
-    print("  [3]  LinkedIn only")
-    print("  [4]  ITJobs only")
-    print("  [5]  Net-Empregos only")
-    print("  [6]  Sapo only")
-    print("  [7]  Landing.jobs only")
-    print("  [8]  TechJobs only")
-    print("  [9]  Expresso Emprego only")
-    print("  [10] Indeed + ITJobs")
-    print("  [11] LinkedIn + ITJobs")
-    print("  [12] ITJobs + Net-Empregos + Sapo")
-    source_choice = input("Choice [1]: ").strip()
-    sources_map: dict[str, list[str]] = {
-        "1": ["indeed", "linkedin", "itjobs", "netempregos", "sapo", "landingjobs", "techjobs", "expresso"],
-        "2": ["indeed"],
-        "3": ["linkedin"],
-        "4": ["itjobs"],
-        "5": ["netempregos"],
-        "6": ["sapo"],
-        "7": ["landingjobs"],
-        "8": ["techjobs"],
-        "9": ["expresso"],
-        "10": ["indeed", "itjobs"],
-        "11": ["linkedin", "itjobs"],
-        "12": ["itjobs", "netempregos", "sapo"],
-    }
-    sources = sources_map.get(source_choice, list(SOURCES))
+    # 0) Sources — multi-select toggle
+    all_sources = [
+        ("indeed", "Indeed"),
+        ("linkedin", "LinkedIn"),
+        ("itjobs", "ITJobs"),
+        ("netempregos", "Net-Empregos"),
+        ("sapo", "Sapo"),
+        ("landingjobs", "Landing.jobs"),
+        ("techjobs", "TechJobs"),
+        ("expresso", "Expresso"),
+    ]
+    selected = set(key for key, _ in all_sources)
 
-    # 1) City / Location
-    loc = input(f"Enter target city/location [{LOCATION}]: ").strip()
+    def _print_sources() -> None:
+        _header("Step 1/4 — Select Sources")
+        print("  Toggle numbers to select/deselect, Enter to confirm:")
+        print()
+        for i, (key, label) in enumerate(all_sources, 1):
+            mark = "x" if key in selected else " "
+            print(f"    [{mark}] {i}. {label}")
+        print()
+
+    _print_sources()
+    while True:
+        choice = input("  > ").strip().lower()
+        if not choice:
+            break
+        tokens = choice.replace(",", " ").split()
+        changed = False
+        for token in tokens:
+            if not token.isdigit():
+                continue
+            idx = int(token) - 1
+            if 0 <= idx < len(all_sources):
+                key = all_sources[idx][0]
+                if key in selected:
+                    selected.discard(key)
+                else:
+                    selected.add(key)
+                changed = True
+        if changed:
+            _print_sources()
+
+    sources = [key for key, _ in all_sources if key in selected]
+    if not sources:
+        sources = [key for key, _ in all_sources]
+
+    # 1) Location + Date + Radius + Pages
+    _header("Step 2/4 — Location & Filters")
+    loc = input(f"  Location [{LOCATION}]: ").strip()
     if loc:
         LOCATION = loc
+    print()
 
-    # 2) Date filter
-    print("Date filter:")
-    print("  [1] Last 24 hours")
-    print("  [2] Last 3 days")
-    print("  [3] Last 7 days")
-    print("  [4] Last 14 days")
-    date_choice = input("Choice [1]: ").strip()
+    print("  Date filter:")
+    print("    [1] Last 24 hours    [3] Last 7 days")
+    print("    [2] Last 3 days      [4] Last 14 days")
+    date_choice = input("  Choice [1]: ").strip()
     date_map: dict[str, int] = {"1": 1, "2": 3, "3": 7, "4": 14}
     DATE_FILTER = date_map.get(date_choice, 1)
+    print()
 
-    # 3) Search radius
-    print("Search radius:")
-    print("  [1]  5 miles")
-    print("  [2] 10 miles")
-    print("  [3] 15 miles")
-    print("  [4] 25 miles")
-    print("  [5] 35 miles")
-    radius_choice = input("Choice [4]: ").strip()
+    print("  Search radius:")
+    print("    [1] 5 km    [3] 15 km    [5] 35 km")
+    print("    [2] 10 km   [4] 25 km")
+    radius_choice = input("  Choice [4]: ").strip()
     radius_map: dict[str, int] = {"1": 5, "2": 10, "3": 15, "4": 25, "5": 35}
     RADIUS = radius_map.get(radius_choice, 25)
+    print()
 
-    # 4) Max pages per keyword
-    raw_pages = input(f"Max pages per keyword (10 jobs/page) [{MAX_PAGES}]: ").strip()
+    raw_pages = input(f"  Max pages per keyword [{MAX_PAGES}]: ").strip()
     if raw_pages:
         try:
             pages = int(raw_pages)
@@ -1227,22 +1261,6 @@ def main() -> int:
         print("[ERROR] Could not extract any text from cv.pdf. Is it scanned? Try an OCR'd PDF.")
         return 1
 
-    # 5) Additional context for Groq (skip when Groq is not used — avoids misleading prompt)
-    if "--no-groq" not in sys.argv:
-        print("Your CV has been read. Anything to add before the AI generates job titles?")
-        additional = input(
-            '(e.g. "I prefer remote roles", "I\'m a recent grad", or press Enter to skip): '
-        ).strip()
-        if additional:
-            cv_text = cv_text + "\n\n--- ADDITIONAL CONTEXT ---\n" + additional
-
-    print("─────────────────────────────────")
-    print(" Search Configuration")
-    print("─────────────────────────────────")
-    print(f" Location   : {LOCATION}")
-    print(f" Date filter: {_date_filter_label()}")
-    print(f" Radius     : {RADIUS} miles")
-    print(f" Max pages  : {MAX_PAGES}")
     _source_names = {
         "indeed": "Indeed",
         "linkedin": "LinkedIn",
@@ -1254,12 +1272,20 @@ def main() -> int:
         "expresso": "Expresso",
     }
     sources_label = ", ".join(_source_names.get(s, s) for s in sources)
-    print(f" Sources     : {sources_label}")
-    print("─────────────────────────────────")
+
+    if "--no-groq" not in sys.argv:
+        _header("Step 3/4 — AI Keywords")
+        print("  Your CV has been read. Anything to add before the AI generates job titles?")
+        additional = input(
+            '  (e.g. "I prefer remote roles", "I\'m a recent grad", or press Enter to skip): '
+        ).strip()
+        if additional:
+            cv_text = cv_text + "\n\n--- ADDITIONAL CONTEXT ---\n" + additional
 
     if DEBUG_KEYWORD_OVERRIDE:
         titles = [DEBUG_KEYWORD_OVERRIDE]
     elif "--no-groq" in sys.argv:
+        _header("Step 3/4 — Keywords (cached)")
         out_path = Path(OUTPUT_FILE)
         if not out_path.exists():
             print("[ERROR] No previous run found. Run without --no-groq first.")
@@ -1282,14 +1308,25 @@ def main() -> int:
         if not titles:
             print("[ERROR] No previous run found. Run without --no-groq first.")
             return 1
-        print(f"[Groq] Skipped — reusing {len(titles)} keywords from last run:")
+        print(f"  Reusing {len(titles)} keywords from last run:")
         for i, t in enumerate(titles, start=1):
-            print(f"  [{i}] {t}")
+            print(f"    [{i}] {t}")
     else:
         titles = generate_job_titles(cv_text)
-        print(f"[Groq] Generated {len(titles)} job titles:")
+        print(f"  Generated {len(titles)} job titles:")
         for i, t in enumerate(titles, start=1):
-            print(f"  [{i}] {t}")
+            print(f"    [{i}] {t}")
+
+    _header("Step 4/4 — Scraping")
+    print("  ─────────────────────────────────────")
+    print(f"   Location    : {LOCATION}")
+    print(f"   Date filter : {_date_filter_label()}")
+    print(f"   Radius      : {RADIUS} km")
+    print(f"   Max pages   : {MAX_PAGES}")
+    print(f"   Sources     : {sources_label}")
+    print(f"   Keywords    : {len(titles)}")
+    print("  ─────────────────────────────────────")
+    print()
 
     all_jobs: list[dict[str, Any]] = []
     indeed_session = create_session() if "indeed" in sources else None
@@ -1305,68 +1342,69 @@ def main() -> int:
 
     for title in titles:
         if "indeed" in sources:
-            print(f"[Indeed] Scraping: '{title}'")
+            print(f"  ► [Indeed] Scraping: '{title}'")
             try:
                 all_jobs.extend(scrape_indeed(title, indeed_session))
             except Exception as err:
-                print(f"[ERROR] indeed failed for '{title}': {err}")
+                print(f"  ✗ [Indeed] failed for '{title}': {err}")
         if "linkedin" in sources:
-            print(f"[LinkedIn] Scraping: '{title}'")
+            print(f"  ► [LinkedIn] Scraping: '{title}'")
             try:
                 all_jobs.extend(scrape_linkedin(title, linkedin_session))
             except Exception as err:
-                print(f"[ERROR] linkedin failed for '{title}': {err}")
+                print(f"  ✗ [LinkedIn] failed for '{title}': {err}")
         if "itjobs" in sources:
-            print(f"[ITJobs] Scraping: '{title}'")
+            print(f"  ► [ITJobs] Scraping: '{title}'")
             try:
                 all_jobs.extend(scrape_itjobs(title))
             except Exception as err:
-                print(f"[ERROR] itjobs failed for '{title}': {err}")
+                print(f"  ✗ [ITJobs] failed for '{title}': {err}")
         if "netempregos" in sources:
-            print(f"[Net-Empregos] Scraping: '{title}'")
+            print(f"  ► [Net-Empregos] Scraping: '{title}'")
             try:
                 all_jobs.extend(scrape_netempregos(title, netempregos_session))
             except Exception as err:
-                print(f"[ERROR] netempregos failed for '{title}': {err}")
+                print(f"  ✗ [Net-Empregos] failed for '{title}': {err}")
         if "sapo" in sources:
-            print(f"[Sapo] Scraping: '{title}'")
+            print(f"  ► [Sapo] Scraping: '{title}'")
             try:
                 all_jobs.extend(scrape_sapo(title, sapo_session))
             except Exception as err:
-                print(f"[ERROR] sapo failed for '{title}': {err}")
+                print(f"  ✗ [Sapo] failed for '{title}': {err}")
         if "landingjobs" in sources:
-            print(f"[Landing.jobs] Scraping: '{title}'")
+            print(f"  ► [Landing.jobs] Scraping: '{title}'")
             try:
                 all_jobs.extend(scrape_landingjobs(title))
             except Exception as err:
-                print(f"[ERROR] landingjobs failed for '{title}': {err}")
+                print(f"  ✗ [Landing.jobs] failed for '{title}': {err}")
         if "techjobs" in sources:
-            print(f"[TechJobs] Scraping: '{title}'")
+            print(f"  ► [TechJobs] Scraping: '{title}'")
             try:
                 all_jobs.extend(scrape_techjobs(title))
             except Exception as err:
-                print(f"[ERROR] techjobs failed for '{title}': {err}")
+                print(f"  ✗ [TechJobs] failed for '{title}': {err}")
         if "expresso" in sources:
-            print(f"[Expresso] Scraping: '{title}'")
+            print(f"  ► [Expresso] Scraping: '{title}'")
             try:
                 all_jobs.extend(scrape_expresso(title, expresso_session))
             except Exception as err:
-                print(f"[ERROR] expresso failed for '{title}': {err}")
+                print(f"  ✗ [Expresso] failed for '{title}': {err}")
 
         output_path, new_count, skipped_count, total_count = save_json(deduplicate(filter_by_date(all_jobs)))
 
-    print("══════════════════════════════════════")
-    print(" Job Hunter Complete")
-    print("══════════════════════════════════════")
-    print(f" Keywords searched : {len(titles)}")
-    print(f" New jobs added  : {new_count}")
-    print(f" Already tracked : {skipped_count}")
-    print(f" Total in file   : {total_count}")
-    print(f" Date filter       : {_date_filter_label()}")
-    print(f" Location          : {LOCATION}")
-    print(f" Sources           : {sources_label}")
-    print(f" Output            : {output_path}")
-    print("══════════════════════════════════════")
+    _header("Done!")
+    print("  ═══════════════════════════════════════")
+    print(f"   Keywords searched : {len(titles)}")
+    print(f"   New jobs added    : {new_count}")
+    print(f"   Already tracked   : {skipped_count}")
+    print(f"   Total in file     : {total_count}")
+    print("  ───────────────────────────────────────")
+    print(f"   Location          : {LOCATION}")
+    print(f"   Date filter       : {_date_filter_label()}")
+    print(f"   Sources           : {sources_label}")
+    print(f"   Output            : {output_path}")
+    print("  ═══════════════════════════════════════")
+    print()
     return 0
 
 
