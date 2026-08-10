@@ -34,7 +34,7 @@ ITJOBS_LOCATION_ID = 14  # 14 = Lisboa. See itjobs.pt/api for other IDs
 ITJOBS_LIMIT = 10  # Results per page
 OUTPUT_FILE = "output/job_leads.json"
 # Used when the source menu choice is blank or not in 1–9 (see _interactive_setup).
-SOURCES = ["indeed", "linkedin", "itjobs", "netempregos", "sapo", "landingjobs", "techjobs"]
+SOURCES = ["indeed", "linkedin", "itjobs", "netempregos", "sapo", "landingjobs", "techjobs", "expresso"]
 
 # Use this to test one keyword in Step 3 without changing the rest of the flow.
 DEBUG_KEYWORD_OVERRIDE: str | None = None
@@ -284,6 +284,7 @@ def parse_jobs_from_linkedin_html(html: str, keyword: str) -> list[dict[str, Any
         job_key = clean_link.rstrip("/").split("-")[-1] if clean_link != "N/A" else None
         if not job_key:
             continue
+        posted_at = item.find("time").attr("datetime") or ""
         jobs.append(
             {
                 "title": title,
@@ -294,6 +295,7 @@ def parse_jobs_from_linkedin_html(html: str, keyword: str) -> list[dict[str, Any
                 "job_key": f"li_{job_key}",
                 "keyword": keyword,
                 "source": "linkedin",
+                "posted_at": posted_at,
                 "scraped_at": datetime.now(timezone.utc).isoformat(),
             }
         )
@@ -421,6 +423,14 @@ def parse_jobs_from_netempregos_html(html: str, keyword: str) -> list[dict[str, 
         salary_gen = (m for m in card.stripped_strings if salary_pattern.search(m))
         salary = next(salary_gen, "N/A")
 
+        posted_at = ""
+        cal_icon = card.select_one(".flaticon-calendar")
+        if cal_icon and cal_icon.parent:
+            raw_date = cal_icon.parent.get_text(strip=True)
+            date_match = re.search(r"(\d{1,2})-(\d{1,2})-(\d{4})", raw_date)
+            if date_match:
+                posted_at = f"{date_match.group(3)}-{date_match.group(2).zfill(2)}-{date_match.group(1).zfill(2)}"
+
         jobs.append(
             {
                 "title": title,
@@ -431,6 +441,7 @@ def parse_jobs_from_netempregos_html(html: str, keyword: str) -> list[dict[str, 
                 "job_key": job_key,
                 "keyword": keyword,
                 "source": "netempregos",
+                "posted_at": posted_at,
                 "scraped_at": datetime.now(timezone.utc).isoformat(),
             }
         )
@@ -515,19 +526,8 @@ def scrape_itjobs(keyword: str) -> list[dict[str, Any]]:
         if not results:
             break
 
-        # Filter by date on our side since the API has no date param
-        cutoff = datetime.now(timezone.utc) - timedelta(days=DATE_FILTER)
         for job in results:
             published_str = job.get("publishedAt", "")
-            try:
-                published = datetime.strptime(published_str, "%Y-%m-%d %H:%M:%S").replace(
-                    tzinfo=timezone.utc
-                )
-            except (ValueError, TypeError):
-                continue
-            if published < cutoff:
-                continue
-
             job_id = job.get("id")
             slug = job.get("slug", "")
             salary = "N/A"
@@ -553,6 +553,7 @@ def scrape_itjobs(keyword: str) -> list[dict[str, Any]]:
                     "job_key": f"itjobs_{job_id}",
                     "keyword": keyword,
                     "source": "itjobs",
+                    "posted_at": published_str,
                     "scraped_at": datetime.now(timezone.utc).isoformat(),
                 }
             )
@@ -670,6 +671,7 @@ def parse_jobs_from_sapo_html(html: str, keyword: str) -> tuple[list[dict[str, A
                 "job_key": job_key,
                 "keyword": keyword,
                 "source": "sapo",
+                "posted_at": job.get("publication_date") or "",
                 "scraped_at": datetime.now(timezone.utc).isoformat(),
             }
         )
@@ -778,6 +780,7 @@ def scrape_landingjobs(keyword: str) -> list[dict[str, Any]]:
                     "job_key": f"landing_{job_id}",
                     "keyword": keyword,
                     "source": "landingjobs",
+                    "posted_at": job.get("published_at", ""),
                     "scraped_at": datetime.now(timezone.utc).isoformat(),
                 }
             )
@@ -799,7 +802,6 @@ def _techjobs_location() -> str:
 
 
 def scrape_techjobs(keyword: str) -> list[dict[str, Any]]:
-    cutoff = datetime.now(timezone.utc) - timedelta(days=DATE_FILTER)
     jobs: list[dict[str, Any]] = []
     offset = 0
 
@@ -835,14 +837,6 @@ def scrape_techjobs(keyword: str) -> list[dict[str, Any]]:
 
         for job in items:
             created_str = job.get("created_at", "")
-            try:
-                created = datetime.strptime(created_str, "%Y-%m-%d %H:%M:%S").replace(
-                    tzinfo=timezone.utc
-                )
-            except (ValueError, TypeError):
-                continue
-            if created < cutoff:
-                continue
 
             salary = "N/A"
             sal_min = job.get("salary_min")
@@ -866,6 +860,7 @@ def scrape_techjobs(keyword: str) -> list[dict[str, Any]]:
                     "job_key": f"techjobs_{job_id}",
                     "keyword": keyword,
                     "source": "techjobs",
+                    "posted_at": created_str,
                     "scraped_at": datetime.now(timezone.utc).isoformat(),
                 }
             )
@@ -876,6 +871,151 @@ def scrape_techjobs(keyword: str) -> list[dict[str, Any]]:
         time.sleep(random.uniform(1, 2))
 
     return jobs
+
+
+def create_expresso_session() -> cffi_requests.Session:
+    session = cffi_requests.Session(impersonate="chrome124")
+    session.headers.update(
+        {
+            "User-Agent": _chrome_124_user_agent(),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "pt-PT,pt;q=0.9,en-US;q=0.8",
+            "Referer": "https://expressoemprego.pt/",
+        }
+    )
+    return session
+
+
+def _expresso_location() -> str:
+    raw_city = LOCATION.split(",")[0].strip()
+    return EN_TO_PT_CITY.get(raw_city.lower(), raw_city).lower()
+
+
+def parse_jobs_from_expresso_html(html: str, keyword: str) -> list[dict[str, Any]]:
+    soup = BeautifulSoup(html, "html.parser")
+    cards = soup.select("div.resultadosBox")
+    jobs: list[dict[str, Any]] = []
+
+    for card in cards:
+        title_elem = card.select_one("h3 a")
+        if not title_elem:
+            continue
+        title = title_elem.get_text(strip=True)
+        href = title_elem.get("href", "")
+        url = f"https://expressoemprego.pt{href}" if href.startswith("/") else href
+
+        company_elem = card.select_one("h4")
+        company = company_elem.get_text(strip=True) if company_elem else "N/A"
+
+        date_text = ""
+        location = "N/A"
+        date_span = card.select_one("span.px13.colorBlack")
+        if date_span:
+            raw = date_span.get_text(strip=True)
+            parts = [p.strip() for p in raw.split("|")]
+            if parts:
+                date_text = parts[0]
+            if len(parts) > 1 and parts[1]:
+                location = parts[1]
+
+        ref_id = href.rstrip("/").split("/")[-1] if href else ""
+        job_key = f"expresso_{ref_id}" if ref_id.isdigit() else _stable_key_from_url(url, "expresso")
+
+        posted_at = ""
+        date_match = re.search(r"(\d{2})\.(\d{2})\.(\d{4})", date_text)
+        if date_match:
+            posted_at = f"{date_match.group(3)}-{date_match.group(2)}-{date_match.group(1)}"
+
+        jobs.append(
+            {
+                "title": title,
+                "company": company,
+                "location": location,
+                "salary": "N/A",
+                "url": url,
+                "job_key": job_key,
+                "keyword": keyword,
+                "source": "expresso",
+                "posted_at": posted_at,
+                "scraped_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+
+    return jobs
+
+
+def scrape_expresso(keyword: str, session: cffi_requests.Session) -> list[dict[str, Any]]:
+    jobs: list[dict[str, Any]] = []
+    location = _expresso_location()
+    slug_keyword = keyword.lower().replace(" ", "-")
+
+    for page in range(1, MAX_PAGES + 1):
+        url = (
+            f"https://expressoemprego.pt/emprego/pesquisa/"
+            f"{slug_keyword}/{location}?order=data&page={page}"
+        )
+        r = session_get_with_retry(session, url, timeout=30)
+        if r.status_code != 200:
+            print(f"[WARN] Expresso page {page} for '{keyword}' returned {r.status_code}")
+            break
+
+        page_jobs = parse_jobs_from_expresso_html(r.text, keyword)
+        if not page_jobs:
+            break
+
+        jobs.extend(page_jobs)
+        time.sleep(random.uniform(3, 6))
+
+    return jobs
+
+
+_DATE_PATTERNS = [
+    (re.compile(r"^(\d{4})-(\d{1,2})-(\d{1,2})"), "ymd"),           # 2026-08-10, 2026-8-5
+    (re.compile(r"^(\d{4})\.(\d{1,2})\.(\d{1,2})"), "ymd"),          # 2026.08.10
+    (re.compile(r"^(\d{4})/(\d{1,2})/(\d{1,2})"), "ymd"),            # 2026/08/10
+    (re.compile(r"^(\d{1,2})-(\d{1,2})-(\d{4})"), "dmy"),            # 10-08-2026, 10-8-2026
+    (re.compile(r"^(\d{1,2})\.(\d{1,2})\.(\d{4})"), "dmy"),          # 10.08.2026
+    (re.compile(r"^(\d{1,2})/(\d{1,2})/(\d{4})"), "dmy"),            # 10/08/2026
+]
+SKIP_DATE_FILTER_SOURCES = {"landingjobs"}
+
+
+def _parse_posted_date(raw: str) -> datetime | None:
+    text = raw.strip().split("T")[0].split(" ")[0]
+    if not text:
+        return None
+    for pattern, order in _DATE_PATTERNS:
+        m = pattern.match(text)
+        if not m:
+            continue
+        if order == "ymd":
+            y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        else:
+            d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        try:
+            return datetime(y, mo, d, tzinfo=timezone.utc)
+        except ValueError:
+            return None
+    return None
+
+
+def filter_by_date(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=DATE_FILTER)
+    filtered: list[dict[str, Any]] = []
+    for job in jobs:
+        source = str(job.get("source", ""))
+        if source in SKIP_DATE_FILTER_SOURCES:
+            filtered.append(job)
+            continue
+        posted_at = str(job.get("posted_at") or "")
+        if not posted_at:
+            filtered.append(job)
+            continue
+        posted_date = _parse_posted_date(posted_at)
+        if posted_date is None or posted_date >= cutoff:
+            filtered.append(job)
+            continue
+    return filtered
 
 
 def deduplicate(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -990,12 +1130,13 @@ def _interactive_setup() -> list[str]:
     print("  [6]  Sapo only")
     print("  [7]  Landing.jobs only")
     print("  [8]  TechJobs only")
-    print("  [9]  Indeed + ITJobs")
-    print("  [10] LinkedIn + ITJobs")
-    print("  [11] ITJobs + Net-Empregos + Sapo")
+    print("  [9]  Expresso Emprego only")
+    print("  [10] Indeed + ITJobs")
+    print("  [11] LinkedIn + ITJobs")
+    print("  [12] ITJobs + Net-Empregos + Sapo")
     source_choice = input("Choice [1]: ").strip()
     sources_map: dict[str, list[str]] = {
-        "1": ["indeed", "linkedin", "itjobs", "netempregos", "sapo", "landingjobs", "techjobs"],
+        "1": ["indeed", "linkedin", "itjobs", "netempregos", "sapo", "landingjobs", "techjobs", "expresso"],
         "2": ["indeed"],
         "3": ["linkedin"],
         "4": ["itjobs"],
@@ -1003,9 +1144,10 @@ def _interactive_setup() -> list[str]:
         "6": ["sapo"],
         "7": ["landingjobs"],
         "8": ["techjobs"],
-        "9": ["indeed", "itjobs"],
-        "10": ["linkedin", "itjobs"],
-        "11": ["itjobs", "netempregos", "sapo"],
+        "9": ["expresso"],
+        "10": ["indeed", "itjobs"],
+        "11": ["linkedin", "itjobs"],
+        "12": ["itjobs", "netempregos", "sapo"],
     }
     sources = sources_map.get(source_choice, list(SOURCES))
 
@@ -1109,6 +1251,7 @@ def main() -> int:
         "sapo": "Sapo",
         "landingjobs": "Landing.jobs",
         "techjobs": "TechJobs",
+        "expresso": "Expresso",
     }
     sources_label = ", ".join(_source_names.get(s, s) for s in sources)
     print(f" Sources     : {sources_label}")
@@ -1153,6 +1296,7 @@ def main() -> int:
     linkedin_session = create_linkedin_session() if "linkedin" in sources else None
     netempregos_session = create_netempregos_session() if "netempregos" in sources else None
     sapo_session = create_sapo_session() if "sapo" in sources else None
+    expresso_session = create_expresso_session() if "expresso" in sources else None
 
     if indeed_session:
         prime_session(indeed_session)
@@ -1202,8 +1346,14 @@ def main() -> int:
                 all_jobs.extend(scrape_techjobs(title))
             except Exception as err:
                 print(f"[ERROR] techjobs failed for '{title}': {err}")
+        if "expresso" in sources:
+            print(f"[Expresso] Scraping: '{title}'")
+            try:
+                all_jobs.extend(scrape_expresso(title, expresso_session))
+            except Exception as err:
+                print(f"[ERROR] expresso failed for '{title}': {err}")
 
-        output_path, new_count, skipped_count, total_count = save_json(deduplicate(all_jobs))
+        output_path, new_count, skipped_count, total_count = save_json(deduplicate(filter_by_date(all_jobs)))
 
     print("══════════════════════════════════════")
     print(" Job Hunter Complete")
