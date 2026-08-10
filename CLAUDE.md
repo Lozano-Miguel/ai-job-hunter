@@ -59,7 +59,7 @@ pip install -r requirements.txt
 
 ## Git
 
-- Never commit as Co-Authored-By. Commits go under Miguel's name only.
+- Never commit as Co-Authored-By. Commits and pushes go under Miguel's name only.
 
 ## Conventions
 

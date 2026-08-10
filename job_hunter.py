@@ -34,7 +34,7 @@ ITJOBS_LOCATION_ID = 14  # 14 = Lisboa. See itjobs.pt/api for other IDs
 ITJOBS_LIMIT = 10  # Results per page
 OUTPUT_FILE = "output/job_leads.json"
 # Used when the source menu choice is blank or not in 1–9 (see _interactive_setup).
-SOURCES = ["indeed", "linkedin", "itjobs", "netempregos", "sapo", "landingjobs"]
+SOURCES = ["indeed", "linkedin", "itjobs", "netempregos", "sapo", "landingjobs", "techjobs"]
 
 # Use this to test one keyword in Step 3 without changing the rest of the flow.
 DEBUG_KEYWORD_OVERRIDE: str | None = None
@@ -790,6 +790,94 @@ def scrape_landingjobs(keyword: str) -> list[dict[str, Any]]:
     return jobs
 
 
+TECHJOBS_API = "https://api.techjobs.pt/api/jobs"
+TECHJOBS_LIMIT = 50
+
+
+def _techjobs_location() -> str:
+    return LOCATION.split(",")[0].strip()
+
+
+def scrape_techjobs(keyword: str) -> list[dict[str, Any]]:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=DATE_FILTER)
+    jobs: list[dict[str, Any]] = []
+    offset = 0
+
+    while True:
+        params: dict[str, Any] = {
+            "q": keyword,
+            "location": _techjobs_location(),
+            "limit": TECHJOBS_LIMIT,
+            "offset": offset,
+        }
+        r = std_requests.get(
+            TECHJOBS_API,
+            params=params,
+            headers={
+                "Accept": "application/json",
+                "Referer": "https://techjobs.pt/",
+            },
+            timeout=30,
+        )
+        if r.status_code != 200:
+            print(f"[WARN] TechJobs API returned {r.status_code}")
+            break
+
+        try:
+            data = r.json()
+        except ValueError:
+            print("[WARN] TechJobs returned invalid JSON")
+            break
+
+        items = data.get("items", [])
+        if not items:
+            break
+
+        for job in items:
+            created_str = job.get("created_at", "")
+            try:
+                created = datetime.strptime(created_str, "%Y-%m-%d %H:%M:%S").replace(
+                    tzinfo=timezone.utc
+                )
+            except (ValueError, TypeError):
+                continue
+            if created < cutoff:
+                continue
+
+            salary = "N/A"
+            sal_min = job.get("salary_min")
+            sal_max = job.get("salary_max")
+            currency = job.get("salary_currency", "EUR")
+            if sal_min and sal_max:
+                salary = f"{sal_min}–{sal_max} {currency}"
+            elif sal_min:
+                salary = f"From {sal_min} {currency}"
+
+            slug = job.get("slug", "")
+            job_id = job.get("id", "")
+
+            jobs.append(
+                {
+                    "title": (job.get("title") or "N/A").strip(),
+                    "company": (job.get("company_name") or "N/A").strip(),
+                    "location": job.get("location") or "N/A",
+                    "salary": salary,
+                    "url": f"https://techjobs.pt/jobs/{slug}" if slug else "N/A",
+                    "job_key": f"techjobs_{job_id}",
+                    "keyword": keyword,
+                    "source": "techjobs",
+                    "scraped_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+
+        if not data.get("has_more", False):
+            break
+        offset += TECHJOBS_LIMIT
+        time.sleep(random.uniform(1, 2))
+
+    return jobs
+
+
 def deduplicate(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     def _normalize_text(value: Any) -> str:
         text = str(value or "").strip().lower()
@@ -901,21 +989,23 @@ def _interactive_setup() -> list[str]:
     print("  [5]  Net-Empregos only")
     print("  [6]  Sapo only")
     print("  [7]  Landing.jobs only")
-    print("  [8]  Indeed + ITJobs")
-    print("  [9]  LinkedIn + ITJobs")
-    print("  [10] ITJobs + Net-Empregos + Sapo")
+    print("  [8]  TechJobs only")
+    print("  [9]  Indeed + ITJobs")
+    print("  [10] LinkedIn + ITJobs")
+    print("  [11] ITJobs + Net-Empregos + Sapo")
     source_choice = input("Choice [1]: ").strip()
     sources_map: dict[str, list[str]] = {
-        "1": ["indeed", "linkedin", "itjobs", "netempregos", "sapo", "landingjobs"],
+        "1": ["indeed", "linkedin", "itjobs", "netempregos", "sapo", "landingjobs", "techjobs"],
         "2": ["indeed"],
         "3": ["linkedin"],
         "4": ["itjobs"],
         "5": ["netempregos"],
         "6": ["sapo"],
         "7": ["landingjobs"],
-        "8": ["indeed", "itjobs"],
-        "9": ["linkedin", "itjobs"],
-        "10": ["itjobs", "netempregos", "sapo"],
+        "8": ["techjobs"],
+        "9": ["indeed", "itjobs"],
+        "10": ["linkedin", "itjobs"],
+        "11": ["itjobs", "netempregos", "sapo"],
     }
     sources = sources_map.get(source_choice, list(SOURCES))
 
@@ -1018,6 +1108,7 @@ def main() -> int:
         "netempregos": "Net-Empregos",
         "sapo": "Sapo",
         "landingjobs": "Landing.jobs",
+        "techjobs": "TechJobs",
     }
     sources_label = ", ".join(_source_names.get(s, s) for s in sources)
     print(f" Sources     : {sources_label}")
@@ -1105,6 +1196,12 @@ def main() -> int:
                 all_jobs.extend(scrape_landingjobs(title))
             except Exception as err:
                 print(f"[ERROR] landingjobs failed for '{title}': {err}")
+        if "techjobs" in sources:
+            print(f"[TechJobs] Scraping: '{title}'")
+            try:
+                all_jobs.extend(scrape_techjobs(title))
+            except Exception as err:
+                print(f"[ERROR] techjobs failed for '{title}': {err}")
 
         output_path, new_count, skipped_count, total_count = save_json(deduplicate(all_jobs))
 
