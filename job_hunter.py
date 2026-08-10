@@ -109,6 +109,11 @@ def _itjobs_post_with_retry(params: dict[str, Any]) -> Any:
     )
 
 
+@retry_http_get
+def _api_get_with_retry(url: str, **kwargs: Any) -> Any:
+    return std_requests.get(url, **kwargs)
+
+
 def extract_cv_text(pdf_path: str) -> str:
     try:
         with pdfplumber.open(pdf_path) as pdf:
@@ -729,9 +734,11 @@ def scrape_landingjobs(keyword: str) -> list[dict[str, Any]]:
     keyword_words = keyword_lower.split()
     jobs: list[dict[str, Any]] = []
     offset = 0
+    max_pages = MAX_PAGES * 5
 
-    while True:
-        r = std_requests.get(
+    while max_pages > 0:
+        max_pages -= 1
+        r = _api_get_with_retry(
             LANDING_JOBS_API,
             params={"limit": LANDING_JOBS_LIMIT, "offset": offset},
             headers={"Accept": "application/json"},
@@ -822,7 +829,7 @@ def scrape_techjobs(keyword: str) -> list[dict[str, Any]]:
             "limit": TECHJOBS_LIMIT,
             "offset": offset,
         }
-        r = std_requests.get(
+        r = _api_get_with_retry(
             TECHJOBS_API,
             params=params,
             headers={
@@ -1010,7 +1017,8 @@ def _parse_posted_date(raw: str) -> datetime | None:
 
 
 def filter_by_date(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    cutoff = datetime.now(timezone.utc) - timedelta(days=DATE_FILTER)
+    today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    cutoff = today - timedelta(days=DATE_FILTER)
     filtered: list[dict[str, Any]] = []
     for job in jobs:
         source = str(job.get("source", ""))
@@ -1057,7 +1065,12 @@ def deduplicate(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     best_by_identity: dict[str, dict[str, Any]] = {}
     order: list[str] = []
     for job in unique_by_key:
-        identity = f"{_normalize_text(job.get('title'))}::{_normalize_text(job.get('company'))}"
+        company_norm = _normalize_text(job.get("company"))
+        title_norm = _normalize_text(job.get("title"))
+        if company_norm in ("", "n/a"):
+            identity = f"{title_norm}::{company_norm}::{job.get('source', '')}::{job.get('job_key', '')}"
+        else:
+            identity = f"{title_norm}::{company_norm}"
         current_best = best_by_identity.get(identity)
         if current_best is None:
             best_by_identity[identity] = job
