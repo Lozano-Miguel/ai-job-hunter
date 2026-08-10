@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import os
 import re
-import socket
 from http.server import HTTPServer, SimpleHTTPRequestHandler
+
+VALID_STATUSES = {"not_applied", "applied", "interviewing", "rejected"}
 
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -56,8 +57,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return
         status = str(payload.get("status") or "").strip() if has_status else None
         notes = str(payload.get("notes") or "") if has_notes else None
-        if has_status and not status:
-            self._send_json(400, {"ok": False, "error": "Missing status"})
+        if has_status and (not status or status not in VALID_STATUSES):
+            self._send_json(400, {"ok": False, "error": "Invalid status"})
             return
 
         try:

@@ -73,7 +73,7 @@ def retry_http_get(func: Callable[P, R]) -> Callable[P, R]:
                     time.sleep(delay)
                     continue
                 return response
-            except (std_requests.Timeout, std_requests.ConnectionError) as err:
+            except (std_requests.Timeout, std_requests.ConnectionError, cffi_requests.errors.RequestsError) as err:
                 last_error = err
                 if attempt >= MAX_GET_ATTEMPTS:
                     raise
@@ -110,11 +110,15 @@ def _itjobs_post_with_retry(params: dict[str, Any]) -> Any:
 
 
 def extract_cv_text(pdf_path: str) -> str:
-    with pdfplumber.open(pdf_path) as pdf:
-        parts: list[str] = []
-        for page in pdf.pages:
-            parts.append(page.extract_text() or "")
-    return "\n".join(parts).strip()
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            parts: list[str] = []
+            for page in pdf.pages:
+                parts.append(page.extract_text() or "")
+        return "\n".join(parts).strip()
+    except Exception as e:
+        print(f"[ERROR] Failed to read cv.pdf: {e}")
+        return ""
 
 
 def _validate_job_titles(value: Any) -> list[str]:
@@ -342,7 +346,7 @@ def parse_jobs_from_html(html: str, keyword: str) -> list[dict[str, Any]]:
                 "location": job.get("formattedLocation") or "N/A",
                 "salary": salary,
                 "url": f"{DOMAIN}/viewjob?jk={job_key}",
-                "job_key": job_key,
+                "job_key": f"indeed_{job_key}",
                 "keyword": keyword,
                 "source": "indeed",
                 "scraped_at": datetime.now(timezone.utc).isoformat(),
@@ -1250,22 +1254,25 @@ def main() -> int:
             print("\n[Dashboard] Closed.")
             sys.exit(0)
 
-    if not os.path.exists(CV_PATH):
-        print("[ERROR] cv.pdf not found. Please place your CV in the project directory.")
-        return 1
-
-    if os.path.getsize(CV_PATH) == 0:
-        print("[ERROR] cv.pdf is empty. Please replace it with your CV.")
-        return 1
-
     load_dotenv()
+
+    needs_cv = "--no-groq" not in sys.argv and not DEBUG_KEYWORD_OVERRIDE
+    if needs_cv:
+        if not os.path.exists(CV_PATH):
+            print("[ERROR] cv.pdf not found. Please place your CV in the project directory.")
+            return 1
+        if os.path.getsize(CV_PATH) == 0:
+            print("[ERROR] cv.pdf is empty. Please replace it with your CV.")
+            return 1
 
     sources = _interactive_setup()
 
-    cv_text = extract_cv_text(CV_PATH)
-    if not cv_text.strip():
-        print("[ERROR] Could not extract any text from cv.pdf. Is it scanned? Try an OCR'd PDF.")
-        return 1
+    cv_text = ""
+    if needs_cv:
+        cv_text = extract_cv_text(CV_PATH)
+        if not cv_text.strip():
+            print("[ERROR] Could not extract any text from cv.pdf. Is it scanned? Try an OCR'd PDF.")
+            return 1
 
     _source_names = {
         "indeed": "Indeed",
@@ -1346,7 +1353,8 @@ def main() -> int:
     if linkedin_session:
         prime_linkedin_session(linkedin_session)
 
-    for title in titles:
+    for ki, title in enumerate(titles, 1):
+        print(f"  [{ki}/{len(titles)}] Keyword: '{title}'")
         if "indeed" in sources:
             print(f"  ► [Indeed] Scraping: '{title}'")
             try:
@@ -1396,7 +1404,7 @@ def main() -> int:
             except Exception as err:
                 print(f"  ✗ [Expresso] failed for '{title}': {err}")
 
-        output_path, new_count, skipped_count, total_count = save_json(deduplicate(filter_by_date(all_jobs)))
+    output_path, new_count, skipped_count, total_count = save_json(deduplicate(filter_by_date(all_jobs)))
 
     _header("Done!")
     print("  ═══════════════════════════════════════")

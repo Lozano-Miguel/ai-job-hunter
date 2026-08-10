@@ -37,7 +37,7 @@
 
     .stats {
       display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
+      grid-template-columns: repeat(5, minmax(0, 1fr));
       gap: 12px;
       margin-bottom: 14px;
     }
@@ -323,6 +323,10 @@
         <div class="label">Interviewing</div>
         <div id="stat-interviewing" class="value">0</div>
       </div>
+      <div class="stat">
+        <div class="label">Rejected</div>
+        <div id="stat-rejected" class="value">0</div>
+      </div>
     </section>
 
     <section class="filters">
@@ -330,6 +334,12 @@
         <option value="all">All Sources</option>
         <option value="indeed">Indeed</option>
         <option value="linkedin">LinkedIn</option>
+        <option value="itjobs">ITJobs</option>
+        <option value="netempregos">Net-Empregos</option>
+        <option value="sapo">Sapo</option>
+        <option value="landingjobs">Landing.jobs</option>
+        <option value="techjobs">TechJobs</option>
+        <option value="expresso">Expresso</option>
       </select>
       <select id="status-filter" aria-label="Filter by status">
         <option value="all">All Statuses</option>
@@ -353,6 +363,7 @@
     const statNotApplied = document.getElementById("stat-not-applied");
     const statApplied = document.getElementById("stat-applied");
     const statInterviewing = document.getElementById("stat-interviewing");
+    const statRejected = document.getElementById("stat-rejected");
 
     let jobs = [];
 
@@ -394,16 +405,19 @@
       let notApplied = 0;
       let applied = 0;
       let interviewing = 0;
+      let rejected = 0;
       for (const job of jobs) {
         const status = normalizeStatus(job.status);
         if (status === "not_applied") notApplied += 1;
         if (status === "applied") applied += 1;
         if (status === "interviewing") interviewing += 1;
+        if (status === "rejected") rejected += 1;
       }
       statTotal.textContent = String(total);
       statNotApplied.textContent = String(notApplied);
       statApplied.textContent = String(applied);
       statInterviewing.textContent = String(interviewing);
+      statRejected.textContent = String(rejected);
     }
 
     function matchesFilters(job) {
@@ -464,7 +478,7 @@
           <div class="meta">
             <span class="badge ${sourceInfo.className}">${esc(sourceInfo.label)}</span>
             <span class="tag">${esc(job.keyword) || "N/A"}</span>
-            <span class="tag">${esc(formatDate(job.scraped_at))}</span>
+            <span class="tag">${job.posted_at ? "Posted " + esc(formatDate(job.posted_at)) : esc(formatDate(job.scraped_at))}</span>
           </div>
           <div class="actions">
             <select aria-label="Job status">
@@ -473,7 +487,7 @@
               <option value="interviewing"${status === "interviewing" ? " selected" : ""}>Interviewing</option>
               <option value="rejected"${status === "rejected" ? " selected" : ""}>Rejected</option>
             </select>
-            <button type="button">Apply</button>
+            <button type="button">View Job</button>
           </div>
           <textarea placeholder="Notes..." rows="1">${esc(job.notes)}</textarea>
         `;
@@ -488,7 +502,7 @@
           if (statusFilter.value !== "all" && statusFilter.value !== newStatus) {
             render();
           }
-          fetch("http://localhost:8000/update-status", {
+          fetch("/update-status", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -520,7 +534,7 @@
         notesTextarea.addEventListener("blur", () => {
           const jobKey = job.job_key;
           job.notes = notesTextarea.value;
-          fetch("http://localhost:8000/update-status", {
+          fetch("/update-status", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
